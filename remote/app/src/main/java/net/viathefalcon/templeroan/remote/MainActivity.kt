@@ -66,15 +66,20 @@ class MainActivity : ComponentActivity() {
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             result?.let { scanResult ->
-                val device = BleDevice(
-                    name = scanResult.device.name ?: "Unknown Device",
-                    address = scanResult.device.address,
-                    rssi = scanResult.rssi
-                )
-                
-                // Add device if not already in the list
-                if (discoveredDevices.none { it.address == device.address }) {
-                    discoveredDevices.add(device)
+                try {
+                    val device = BleDevice(
+                        name = scanResult.device.name ?: "Unknown Device",
+                        address = scanResult.device.address,
+                        rssi = scanResult.rssi
+                    )
+                    
+                    // Add device if not already in the list
+                    if (discoveredDevices.none { it.address == device.address }) {
+                        discoveredDevices.add(device)
+                    }
+                } catch (e: SecurityException) {
+                    // Permission was revoked during scan
+                    stopBleScan()
                 }
             }
         }
@@ -132,7 +137,8 @@ class MainActivity : ComponentActivity() {
         } else {
             listOf(
                 Manifest.permission.BLUETOOTH,
-                Manifest.permission.BLUETOOTH_ADMIN
+                Manifest.permission.BLUETOOTH_ADMIN,
+                Manifest.permission.ACCESS_FINE_LOCATION
             )
         }
         
@@ -150,7 +156,8 @@ class MainActivity : ComponentActivity() {
         } else {
             arrayOf(
                 Manifest.permission.BLUETOOTH,
-                Manifest.permission.BLUETOOTH_ADMIN
+                Manifest.permission.BLUETOOTH_ADMIN,
+                Manifest.permission.ACCESS_FINE_LOCATION
             )
         }
         
