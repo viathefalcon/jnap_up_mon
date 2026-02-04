@@ -114,6 +114,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        
+        // Automatically start scanning when the activity launches
+        if (checkPermissions()) {
+            startBleScan()
+        } else {
+            requestPermissions()
+        }
     }
     
     private fun toggleScan() {
