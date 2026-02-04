@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
     private var bluetoothLeScanner: BluetoothLeScanner? = null
     private var isScanning = mutableStateOf(false)
     private val discoveredDevices = mutableStateListOf<BleDevice>()
+    private var hasAutoStarted = false
     
     // Service UUID from the Arduino sketch
     private val SERVICE_UUID = UUID.fromString("505F8A1F-3872-449E-9167-B3549A5D7A87")
@@ -114,12 +115,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+    
+    override fun onResume() {
+        super.onResume()
         
-        // Automatically start scanning when the activity launches
-        if (checkPermissions()) {
-            startBleScan()
-        } else {
-            requestPermissions()
+        // Automatically start scanning when the activity first launches
+        if (!hasAutoStarted) {
+            hasAutoStarted = true
+            if (checkPermissions()) {
+                startBleScan()
+            } else {
+                requestPermissions()
+            }
         }
     }
     
