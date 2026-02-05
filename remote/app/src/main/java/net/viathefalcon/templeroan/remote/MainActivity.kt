@@ -18,6 +18,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,9 +27,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -68,15 +73,18 @@ class MainActivity : ComponentActivity() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             result?.let { scanResult ->
                 try {
-                    val device = BleDevice(
+                    val foundDevice = BleDevice(
                         name = scanResult.device.name ?: "Unknown Device",
                         address = scanResult.device.address,
                         rssi = scanResult.rssi
                     )
                     
-                    // Add device if not already in the list
-                    if (discoveredDevices.none { it.address == device.address }) {
-                        discoveredDevices.add(device)
+                    // Update device if exists, otherwise add new
+                    val existingIndex = discoveredDevices.indexOfFirst { it.address == foundDevice.address }
+                    if (existingIndex >= 0) {
+                        discoveredDevices[existingIndex] = foundDevice
+                    } else {
+                        discoveredDevices.add(foundDevice)
                     }
                 } catch (e: SecurityException) {
                     // Permission was revoked during scan
@@ -105,12 +113,23 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             RemoteTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                Scaffold(
+                    modifier = Modifier.fillMaxSize(),
+                    floatingActionButton = {
+                        FloatingActionButton(
+                            onClick = { toggleScan() }
+                        ) {
+                            Icon(
+                                imageVector = if (isScanning.value) Icons.Filled.Close else Icons.Filled.Refresh,
+                                contentDescription = if (isScanning.value) "Stop scanning" else "Restart scanning"
+                            )
+                        }
+                    }
+                ) { innerPadding ->
                     BleScanner(
                         modifier = Modifier.padding(innerPadding),
                         isScanning = isScanning.value,
-                        devices = discoveredDevices,
-                        onScanClick = { toggleScan() }
+                        devices = discoveredDevices
                     )
                 }
             }
@@ -185,7 +204,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         
-        discoveredDevices.clear()
+        // Don't clear devices - keep accumulating discoveries
         
         val scanFilter = ScanFilter.Builder()
             .setServiceUuid(ParcelUuid(SERVICE_UUID))
@@ -193,6 +212,8 @@ class MainActivity : ComponentActivity() {
         
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .setReportDelay(0) // Report immediately for continuous updates
             .build()
         
         try {
@@ -228,49 +249,42 @@ data class BleDevice(
 fun BleScanner(
     modifier: Modifier = Modifier,
     isScanning: Boolean,
-    devices: List<BleDevice>,
-    onScanClick: () -> Unit
+    devices: List<BleDevice>
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = "JNAP UpMon Scanner",
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.padding(bottom = 16.dp)
-        )
-        
-        Button(
-            onClick = onScanClick,
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp)
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(if (isScanning) "Stop Scan" else "Start Scan")
-        }
-        
-        if (devices.isEmpty() && isScanning) {
             Text(
-                text = "Scanning for devices...",
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.padding(16.dp)
+                text = "JNAP UpMon Scanner",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.padding(bottom = 16.dp)
             )
-        } else if (devices.isEmpty()) {
+            
             Text(
-                text = "No devices found. Tap 'Start Scan' to begin.",
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.padding(16.dp)
+                text = if (isScanning) "Scanning continuously..." else "Scanning stopped",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isScanning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(bottom = 16.dp)
             )
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(devices) { device ->
-                    DeviceCard(device = device)
+            
+            if (devices.isEmpty()) {
+                Text(
+                    text = if (isScanning) "Waiting for devices..." else "No devices found",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(16.dp)
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(devices) { device ->
+                        DeviceCard(device = device)
+                    }
                 }
             }
         }
