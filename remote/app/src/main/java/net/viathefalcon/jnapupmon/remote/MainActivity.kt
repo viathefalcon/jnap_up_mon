@@ -9,11 +9,13 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.ParcelUuid
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -110,7 +112,12 @@ class MainActivity : ComponentActivity() {
         bluetoothAdapter = bluetoothManager.adapter
         bluetoothLeScanner = bluetoothAdapter?.bluetoothLeScanner
         
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(
+                Color.TRANSPARENT,
+                Color.TRANSPARENT
+            )
+        )
         setContent {
             RemoteTheme {
                 Scaffold(
@@ -259,13 +266,13 @@ fun BleScanner(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "JNAP UpMon Scanner",
+                text = "JNAP UpMon Remote",
                 style = MaterialTheme.typography.headlineMedium,
                 modifier = Modifier.padding(bottom = 16.dp)
             )
             
             Text(
-                text = if (isScanning) "Scanning continuously..." else "Scanning stopped",
+                text = if (isScanning) "Scanning..." else "Scanning stopped",
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (isScanning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(bottom = 16.dp)
