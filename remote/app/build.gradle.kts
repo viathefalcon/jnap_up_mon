@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "net.viathefalcon.templeroan.remote"
+    namespace = "net.viathefalcon.jnapupmon.remote"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "net.viathefalcon.templeroan.remote"
+        applicationId = "net.viathefalcon.jnapupmon.remote"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

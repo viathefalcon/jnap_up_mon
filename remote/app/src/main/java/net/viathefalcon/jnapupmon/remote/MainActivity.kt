@@ -1,4 +1,4 @@
-package net.viathefalcon.templeroan.remote
+package net.viathefalcon.jnapupmon.remote
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
@@ -48,7 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import net.viathefalcon.templeroan.remote.ui.theme.RemoteTheme
+import net.viathefalcon.jnapupmon.remote.ui.theme.RemoteTheme
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {

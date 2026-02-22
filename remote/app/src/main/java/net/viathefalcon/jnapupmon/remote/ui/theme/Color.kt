@@ -1,4 +1,4 @@
-package net.viathefalcon.templeroan.remote.ui.theme
+package net.viathefalcon.jnapupmon.remote.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
