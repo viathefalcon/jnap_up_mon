@@ -26,6 +26,8 @@ Main program for autonomously monitoring that the WiFi is still up.
 #define STATE_READING       0x03
 #define STATE_REBOOTING     0x04
 
+#define ONE_MINUTE_MILLIS   60000
+
 // Globals
 //
 
@@ -53,8 +55,8 @@ unsigned long mru = 0, mrr = 0;
 
 int Jnap(char* action) {
 
-  //Serial.print( "JNAP: " );
-  //Serial.println( action );
+  Serial.print( "JNAP: " );
+  Serial.println( action );
 
   int count = 0;
   WiFiClient client;
@@ -85,7 +87,7 @@ int Jnap(char* action) {
     while (client.available( )) {
       String line = client.readStringUntil('\n');
       count += line.length( );
-      //Serial.println(line);
+      Serial.println(line);
     }
 
     // Cleanup, get out
@@ -128,20 +130,20 @@ int ReadFromCanary(const char* host, const char* path) {
       if (line == "\r") {
         break;
       }
-      //Serial.println( line );
+      // Serial.println( line );
     }
 
     // Read it
     while (client.available( )){
       char c = client.read( );
       count += 1;
-      // //Serial.print( c );
+      // Serial.print( c );
     }
-    // //Serial.println( );
+    // Serial.println( );
     client.stop( );
   }else{
-    //Serial.print( "Failed to connect to " );
-    //Serial.println( host );
+    Serial.print( "Failed to connect to " );
+    Serial.println( host );
   }
   return count;
 }
@@ -165,134 +167,112 @@ int ReadFromCanaries() {
   return count;
 }
 
-void DoJnapUpMon() {
-  stateCharacteristic.writeValue( STATE_CONNECTING );
+int ConnectToWiFi() {
+  const unsigned long interval   = 500;
+  const unsigned long timeout = 15000;
 
-  // Try and connect to the wifi network
-  int status = WL_IDLE_STATUS;
-  for (int counter = 0; (counter < 3) && (status != WL_CONNECTED); ++counter ){
-    delay( 10000 );
-
-    //Serial.print("Attempting to connect to ");
-    //Serial.print( ssid );
-    //Serial.print( ": " );
-    status = WiFi.begin( ssid, pass );
-    //Serial.println(status, HEX);
-  }
-  if (status == WL_CONNECTED){
-    // Try and make an outbound HTTP call
-    int read = ReadFromCanaries( );
-    //Serial.print( "Recv'd: " );
-    //Serial.println( String( read ) );
-    if (read < 1){
-      read = RebootWifi( );
-      //Serial.print( "Recv'd: " );
-      //Serial.println( String( read ) );
-
-      // For now, just turn off the light
-      digitalWrite( LED_BUILTIN, LOW );
+  int status = WiFi.status();
+  for (int attempt = 0; (attempt < 3) && (status != WL_CONNECTED); ++attempt) {
+    if (attempt > 0) {
+      // Tear down the previous failed attempt cleanly before re-issuing begin()
+      WiFi.disconnect();
+      delay(2000);
     }
 
-    // Disconnect from the wifi
-    WiFi.end( );
+    Serial.print("Attempting to connect to ");
+    Serial.print(ssid);
+    Serial.print(" (attempt ");
+    Serial.print(attempt + 1);
+    Serial.println(")");
+    WiFi.begin(ssid, pass);
+
+    // Poll until associated or the per-attempt deadline expires
+    const unsigned long deadline = millis() + timeout;
+    do {
+      delay(interval);
+      status = WiFi.status();
+      Serial.print("  status: ");
+      Serial.println(status, HEX);
+    } while ((status != WL_CONNECTED) && (millis() < deadline));
   }
 
-  // Capture the timestamp
-  mru = millis( );
+  return status;
 }
 
-void SetupWiFi() {
-  // Wait for the WiFi module to come up
-  if (WiFi.status() == WL_NO_MODULE) {
-    //Serial.println("Communication with WiFi module failed!");
-    // don't continue
-    while (true);
-  }
+void RestartBLE() {
+  do {
+    delay(200);
+  } while (!BLE.begin());
 
-  String fv = WiFi.firmwareVersion( );
-  if (fv < WIFI_FIRMWARE_LATEST_VERSION) {
-    //Serial.println("Please upgrade the firmware");
-    fv = "";
-  }
-}
-
-void SetupBLE() {
-  // Initialise the Bluetooth Low Energy elements
-  if (!BLE.begin()) {
-    //Serial.println("starting Bluetooth® Low Energy module failed!");
-    while (true);
-  }
   BLE.setLocalName("JnapUpMon");
   BLE.setAdvertisedService(bleService);
 
-  // Add the characteristics to the service
   bleService.addCharacteristic(runCharacteristic);
   bleService.addCharacteristic(rebootCharacteristic);
   bleService.addCharacteristic(stateCharacteristic);
   bleService.addCharacteristic(mrrCharacteristic);
 
-  // Add the service to the stack
   BLE.addService(bleService);
-
-  // Initialise the characteristics
-  runCharacteristic.setEventHandler(BLEWritten, runCharacteristicWritten);
-  runCharacteristic.setValue(0);
-  rebootCharacteristic.setEventHandler(BLEWritten, rebootCharacteristicWritten);
-  rebootCharacteristic.setValue(0);
-  stateCharacteristic.setValue( STATE_STARTING );
-  mrrCharacteristic.setEventHandler(BLERead, mrrCharacteristicRead);
-
-  // Finish up, start advertising the service
-  BLE.advertise( );
+  BLE.advertise();
 }
 
-void setup() {
-  /*
-  // Initialize serial and wait for port to open:
-  Serial.begin(9600);
-  while (!Serial) {
-    ; // wait for serial port to connect. Needed for native USB port only
-  }
-  */
-
-  // initialize digital pin LED_BUILTIN as an output, and immediately turn off
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
-
-  // Configure the WiFi stack
-  SetupWiFi( );
-
-  // Now that the WiFi is up, we can do the first run
-  // before looking for BLE events
-  DoJnapUpMon( );
-
-  // Configure for Bluetooth
-  SetupBLE( );
-
-  // Setup completed; turn the light back on
-  digitalWrite(LED_BUILTIN, HIGH);
+void StopBLE() {
+  // Tear down the BLE stack before handing the radio to WiFi.
+  // stopAdvertise() prevents new connections; disconnect() cleanly closes any
+  // active central connection (no-op if none); end() shuts the HCI layer down.
+  BLE.stopAdvertise();
+  BLE.disconnect();
+  BLE.end();
 }
 
-void loop() {
-  const unsigned long interval = 600000;
-  const unsigned long now = millis( );
-  //Serial.print( "Now = " );
-  //Serial.print( now, DEC );
-  //Serial.print( "; mru = " );
-  //Serial.println( mru, DEC );
+void DoJnapUpMon() {
+  stateCharacteristic.writeValue( STATE_CONNECTING );
+  StopBLE();
 
-  // When did we get here - was it because of a timeout
-  const unsigned long elapsed = (now < mru) ? interval : (now - mru);
-  if (elapsed >= interval){
-    // The clock has either rolled over or the timeout elapsed,
-    // so do the thing
-    DoJnapUpMon( );
+  const int status = ConnectToWiFi();
+  if (status == WL_CONNECTED){
+    // Try and make an outbound HTTP call
+    int read = ReadFromCanaries( );
+    Serial.print( "Recv'd: " );
+    Serial.println( String( read ) );
+    if (read < 1){
+      read = RebootWifi( );
+      Serial.print( "Recv'd: " );
+      Serial.println( String( read ) );
+
+      // For now, just turn off the light
+      digitalWrite( LED_BUILTIN, LOW );
+    }
+
+    // Disassociate cleanly, then power down the radio
+    WiFi.disconnect();
+    WiFi.end();
   }
 
-  // Wait, poll for events from the Bluetooth stack
-  stateCharacteristic.writeValue( STATE_POLLING );
-  const unsigned long timeout = (elapsed < interval) ? (interval - elapsed) : interval;
-  BLE.poll( timeout );
+  // Capture the timestamp and bring the BLE stack back up before returning
+  mru = millis( );
+  RestartBLE( );
+}
+
+void SetupWiFi() {
+  // Wait for the WiFi module to come up
+  if (WiFi.status() == WL_NO_MODULE) {
+    Serial.println("Communication with WiFi module failed!");
+    // don't continue
+    while (true) {
+      // Blink to signal fatal error
+      digitalWrite(LED_BUILTIN, HIGH);
+      delay(200);
+      digitalWrite(LED_BUILTIN, LOW);
+      delay(200);
+    }  
+  }
+
+  String fv = WiFi.firmwareVersion( );
+  if (fv < WIFI_FIRMWARE_LATEST_VERSION) {
+    Serial.println("Please upgrade the firmware");
+    fv = "";
+  }
 }
 
 void runCharacteristicWritten(BLEDevice central, BLECharacteristic characteristic) {
@@ -301,17 +281,17 @@ void runCharacteristicWritten(BLEDevice central, BLECharacteristic characteristi
   (void)characteristic;
 
   // central wrote new value to characteristic, update LED
-  //Serial.print("Characteristic event, written: ");
+  Serial.print("runCharacteristicWritten: ");
   if (runCharacteristic.value( )){
-    //Serial.println("non-zero.");
+    Serial.println("non-zero.");
 
     // Do the thing
-    DoJnapUpMon( );
+    // DoJnapUpMon( );
 
     // Reset
     runCharacteristic.setValue( 0 );
   }else{
-    //Serial.println("non-zero.");
+    Serial.println("zero.");
   }
 }
 
@@ -321,17 +301,17 @@ void rebootCharacteristicWritten(BLEDevice central, BLECharacteristic characteri
   (void)characteristic;
 
   // central wrote new value to characteristic, update LED
-  //Serial.print("Characteristic event, written: ");
+  Serial.print("rebootCharacteristicWritten: ");
   if (rebootCharacteristic.value( )){
-    //Serial.println("non-zero.");
+    Serial.println("non-zero.");
 
     // Reboot the WiFi
-    RebootWifi( );
+    // RebootWifi( );
 
     // Reset
     rebootCharacteristic.setValue( 0 );
   }else{
-    //Serial.println("non-zero.");
+    Serial.println("zero.");
   }
 }
 
@@ -348,7 +328,7 @@ void mrrCharacteristicRead(BLEDevice central, BLECharacteristic characteristic) 
     return;
   }
 
-  const unsigned int now = millis( );
+  const unsigned long now = millis( );
   if (mrr >= now){
     // Clock has (probably) rolled over so we can't really know..
     mrrCharacteristic.writeValue( ULONG_MAX );
@@ -356,8 +336,74 @@ void mrrCharacteristicRead(BLEDevice central, BLECharacteristic characteristic) 
   }
 
   const unsigned long value = (now - mrr);
-  //Serial.print( "Calculated " );
-  //Serial.print( value, DEC );
-  //Serial.println( " as the delta since the last restart." );
+  Serial.print( "Calculated " );
+  Serial.print( value, DEC );
+  Serial.println( " as the delta since the last restart." );
   mrrCharacteristic.writeValue( value );
+}
+
+void onBLEConnected(BLEDevice central) {
+  // central connected event
+  Serial.print("Connected event, central: ");
+  Serial.println(central.address( ));
+}
+
+void onBLEDisconnected(BLEDevice central) {
+  BLE.advertise();
+}
+
+void SetupBLE() {
+  // Initialise the characteristics
+  runCharacteristic.setEventHandler(BLEWritten, runCharacteristicWritten);
+  runCharacteristic.setValue(0);
+  rebootCharacteristic.setEventHandler(BLEWritten, rebootCharacteristicWritten);
+  rebootCharacteristic.setValue(0);
+  stateCharacteristic.setValue( STATE_STARTING );
+  mrrCharacteristic.setEventHandler(BLERead, mrrCharacteristicRead);
+
+  // Start the connection
+  RestartBLE();
+}
+
+void setup() {
+  // Initialize serial
+  Serial.begin(9600);
+
+  // initialize digital pin LED_BUILTIN as an output, and immediately turn off
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+
+  // Configure the WiFi stack
+  SetupWiFi( );
+
+  // Configure for Bluetooth
+  SetupBLE( );
+
+  // Now that everything is up, we can do the first run
+  DoJnapUpMon( );
+
+  // Setup completed; turn the light back on
+  digitalWrite(LED_BUILTIN, HIGH);
+}
+
+void loop() {
+  const unsigned long interval = (5 * ONE_MINUTE_MILLIS);
+  const unsigned long now = millis( );
+  Serial.print( "Now = " );
+  Serial.print( now, DEC );
+  Serial.print( "; mru = " );
+  Serial.println( mru, DEC );
+
+  // When did we get here - was it because of a timeout
+  const unsigned long elapsed = (now < mru) ? interval : (now - mru);
+  if (elapsed >= interval){
+    // The clock has either rolled over or the timeout elapsed,
+    // so do the thing
+    DoJnapUpMon( );
+  }
+
+  // Wait, poll for events from the Bluetooth stack
+  const unsigned long timeout = (elapsed < interval) ? (interval - elapsed) : interval;
+  stateCharacteristic.writeValue( STATE_POLLING );
+  BLE.poll( timeout );
 }
