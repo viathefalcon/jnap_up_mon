@@ -49,10 +49,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -92,7 +90,7 @@ class MainActivity : ComponentActivity() {
             result?.let { scanResult ->
                 try {
                     val foundDevice = BleDevice(
-                        name = scanResult.device.name ?: "Unknown Device",
+                        name = scanResult.device.name ?: "Unnamed Device",
                         address = scanResult.device.address,
                         rssi = scanResult.rssi
                     )
@@ -118,7 +116,7 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(
                 this@MainActivity,
                 "Scan failed with error: $errorCode",
-                Toast.LENGTH_SHORT
+                Toast.LENGTH_LONG
             ).show()
             isScanning.value = false
         }
@@ -233,7 +231,6 @@ class MainActivity : ComponentActivity() {
         }
         
         // Don't clear devices - keep accumulating discoveries
-        
         val scanFilter = ScanFilter.Builder()
             .setServiceUuid(ParcelUuid(SERVICE_UUID))
             .build()
@@ -543,7 +540,7 @@ fun DeviceCard(
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "Signal: ${device.rssi} dBm",
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodyMedium
             )
             if (isConnecting) {
                 Spacer(modifier = Modifier.height(8.dp))
