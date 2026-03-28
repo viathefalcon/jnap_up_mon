@@ -274,6 +274,18 @@ class MainActivity : ComponentActivity() {
 
     private fun connectToDevice(bleDevice: BleDevice) {
         if (connectingAddress.value != null) return
+
+        // If the card is already expanded, collapse it and resume scanning instead
+        val deviceIndex = discoveredDevices.indexOfFirst { it.address == bleDevice.address }
+        val existingDevice = if (deviceIndex >= 0) discoveredDevices[deviceIndex] else null
+        if (existingDevice != null && (existingDevice.state != null || existingDevice.mrrSeconds != null)) {
+            discoveredDevices[deviceIndex] = existingDevice.copy(state = null, mrrSeconds = null)
+            if (checkPermissions()) {
+                startBleScan()
+            }
+            return
+        }
+
         stopBleScan()
         try {
             bluetoothGatt?.close()
