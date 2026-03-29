@@ -69,7 +69,6 @@ class MainActivity : ComponentActivity() {
     private val SERVICE_UUID = UUID.fromString("505F8A1F-3872-449E-9167-B3549A5D7A87")
 
     // Characteristic UUIDs from the Arduino sketch
-    private val CHARACTERISTIC_STATE_UUID = UUID.fromString("8186E6A2-77A6-43CC-8C99-31DC36136147")
     private val CHARACTERISTIC_MRR_UUID = UUID.fromString("43ADDD14-843B-407C-9B40-696E3819B4AE")
 
     private var bluetoothGatt: BluetoothGatt? = null
@@ -105,7 +104,7 @@ class MainActivity : ComponentActivity() {
                     } else {
                         discoveredDevices.add(foundDevice)
                     }
-                } catch (e: SecurityException) {
+                } catch (_: SecurityException) {
                     // Permission was revoked during scan
                     stopBleScan()
                 }
@@ -244,7 +243,7 @@ class MainActivity : ComponentActivity() {
         try {
             bluetoothLeScanner?.startScan(listOf(scanFilter), scanSettings, scanCallback)
             isScanning.value = true
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             Toast.makeText(this, "Permission denied", Toast.LENGTH_SHORT).show()
         }
     }
@@ -252,7 +251,7 @@ class MainActivity : ComponentActivity() {
     private fun stopBleScan() {
         try {
             bluetoothLeScanner?.stopScan(scanCallback)
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             // Ignore
         }
         isScanning.value = false
@@ -263,7 +262,7 @@ class MainActivity : ComponentActivity() {
         stopBleScan()
         try {
             bluetoothGatt?.close()
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             // ignore
         }
         bluetoothGatt = null
@@ -275,8 +274,8 @@ class MainActivity : ComponentActivity() {
         // If the card is already expanded, collapse it and resume scanning instead
         val deviceIndex = discoveredDevices.indexOfFirst { it.address == bleDevice.address }
         val existingDevice = if (deviceIndex >= 0) discoveredDevices[deviceIndex] else null
-        if (existingDevice != null && (existingDevice.state != null || existingDevice.mrrSeconds != null)) {
-            discoveredDevices[deviceIndex] = existingDevice.copy(state = null, mrrSeconds = null)
+        if (existingDevice != null && (existingDevice.mrr != null)) {
+            discoveredDevices[deviceIndex] = existingDevice.copy(mrr = null)
             if (checkPermissions()) {
                 startBleScan()
             }
@@ -286,7 +285,7 @@ class MainActivity : ComponentActivity() {
         stopBleScan()
         try {
             bluetoothGatt?.close()
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             // ignore
         }
         bluetoothGatt = null
@@ -298,7 +297,7 @@ class MainActivity : ComponentActivity() {
             }
             bluetoothGatt = device.connectGatt(this, false, gattCallback)
         } catch (e: SecurityException) {
-            Toast.makeText(this, "Permission denied", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, e.message, Toast.LENGTH_SHORT).show()
             connectingAddress.value = null
         }
     }
@@ -309,7 +308,7 @@ class MainActivity : ComponentActivity() {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 try {
                     gatt.discoverServices()
-                } catch (e: SecurityException) {
+                } catch (_: SecurityException) {
                     runOnUiThread { connectingAddress.value = null }
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -327,23 +326,23 @@ class MainActivity : ComponentActivity() {
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                val stateChar = gatt.getService(SERVICE_UUID)
-                    ?.getCharacteristic(CHARACTERISTIC_STATE_UUID)
+                val mrrCharacteristic = gatt.getService(SERVICE_UUID)
+                    ?.getCharacteristic(CHARACTERISTIC_MRR_UUID)
                 try {
-                    if (stateChar != null) {
-                        gatt.readCharacteristic(stateChar)
+                    if (mrrCharacteristic != null) {
+                        gatt.readCharacteristic(mrrCharacteristic)
                     } else {
                         runOnUiThread { connectingAddress.value = null }
                         gatt.disconnect()
                     }
-                } catch (e: SecurityException) {
+                } catch (_: SecurityException) {
                     runOnUiThread { connectingAddress.value = null }
                 }
             } else {
                 runOnUiThread { connectingAddress.value = null }
                 try {
                     gatt.disconnect()
-                } catch (e: SecurityException) {
+                } catch (_: SecurityException) {
                     // ignore
                 }
             }
@@ -383,62 +382,31 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread { connectingAddress.value = null }
                 try {
                     gatt.disconnect()
-                } catch (e: SecurityException) {
+                } catch (_: SecurityException) {
                     // ignore
                 }
                 return
             }
             val address = gatt.device.address
             when (characteristic.uuid) {
-                CHARACTERISTIC_STATE_UUID -> {
-                    val stateByte = if (value.isNotEmpty()) value[0].toInt() and 0xFF else -1
-                    val stateString = stateByteToString(stateByte)
-                    runOnUiThread {
-                        val idx = discoveredDevices.indexOfFirst { it.address == address }
-                        if (idx >= 0) {
-                            discoveredDevices[idx] = discoveredDevices[idx].copy(state = stateString)
-                        }
-                    }
-                    val mrrChar = gatt.getService(SERVICE_UUID)
-                        ?.getCharacteristic(CHARACTERISTIC_MRR_UUID)
-                    try {
-                        if (mrrChar != null) {
-                            gatt.readCharacteristic(mrrChar)
-                        } else {
-                            runOnUiThread { connectingAddress.value = null }
-                            gatt.disconnect()
-                        }
-                    } catch (e: SecurityException) {
-                        runOnUiThread { connectingAddress.value = null }
-                    }
-                }
                 CHARACTERISTIC_MRR_UUID -> {
                     val mrrMs = value.toUInt32LittleEndian()
                     val mrrSeconds = mrrMs.toDouble() / 1000.0
                     runOnUiThread {
                         val idx = discoveredDevices.indexOfFirst { it.address == address }
                         if (idx >= 0) {
-                            discoveredDevices[idx] = discoveredDevices[idx].copy(mrrSeconds = mrrSeconds)
+                            discoveredDevices[idx] = discoveredDevices[idx].copy(mrr = mrrSeconds)
                         }
                         connectingAddress.value = null
                     }
                     try {
                         gatt.disconnect()
-                    } catch (e: SecurityException) {
+                    } catch (_: SecurityException) {
                         // ignore
                     }
                 }
             }
         }
-    }
-
-    private fun stateByteToString(stateByte: Int): String = when (stateByte) {
-        0x00 -> "Starting"
-        0x01 -> "Polling"
-        0x02 -> "Connecting"
-        0x03 -> "Reading"
-        0x04 -> "Rebooting"
-        else -> "Unknown"
     }
 }
 
@@ -446,8 +414,7 @@ data class BleDevice(
     val name: String,
     val address: String,
     val rssi: Int,
-    val state: String? = null,
-    val mrrSeconds: Double? = null
+    val mrr: Double? = null
 )
 
 private fun ByteArray.toUInt32LittleEndian(): ULong {
@@ -474,7 +441,7 @@ fun BleScanner(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "JNAP UpMon Remote",
+                text = "JNAP UpMon",
                 style = MaterialTheme.typography.headlineMedium,
                 modifier = Modifier.padding(bottom = 16.dp)
             )
@@ -516,7 +483,7 @@ fun DeviceCard(
     isConnecting: Boolean = false,
     onTap: () -> Unit = {}
 ) {
-    val isExpanded = device.state != null || device.mrrSeconds != null
+    val isExpanded = device.mrr != null
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -548,13 +515,7 @@ fun DeviceCard(
             }
             if (isExpanded) {
                 Spacer(modifier = Modifier.height(8.dp))
-                device.state?.let { state ->
-                    Text(
-                        text = "State: $state",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-                device.mrrSeconds?.let { mrr ->
+                device.mrr.let { mrr ->
                     Spacer(modifier = Modifier.height(4.dp))
                     val mrrText = if (mrr == 0.0) {
                         "Last restart: Never"
