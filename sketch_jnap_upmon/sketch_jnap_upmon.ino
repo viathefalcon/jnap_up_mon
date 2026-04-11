@@ -20,11 +20,8 @@ Main program for autonomously monitoring that the WiFi is still up.
 // Macros
 //
 
-#define STATE_STARTING      0x00
-#define STATE_POLLING       0x01
-#define STATE_CONNECTING    0x02
-#define STATE_READING       0x03
-#define STATE_REBOOTING     0x04
+#define FLAG_SKIP_WAIT      0x01
+#define FLAG_SKIP_CANARY    (FLAG_SKIP_WAIT << 1)
 
 #define ONE_MINUTE_MILLIS   60000
 
@@ -40,8 +37,8 @@ BLEByteCharacteristic runCharacteristic("E2C0FF71-A900-434D-9C39-6465443F3F5A", 
 // Declare the ID for the characteristic by which a client invoke reboot procedure
 BLEByteCharacteristic rebootCharacteristic("143E8851-01C0-49ED-8F37-9D287B6B32C7", BLEWrite);
 
-// Declare the ID for the characteristic by which a client can get the most recent state
-BLEByteCharacteristic stateCharacteristic("8186E6A2-77A6-43CC-8C99-31DC36136147", BLERead | BLENotify);
+// Declare the ID for the characteristic by which a client can reset mrr and turn LED on
+BLEByteCharacteristic resetCharacteristic("B6C3D7F2-28E7-4C95-B6AB-65D34D7D9E13", BLEWrite);
 
 // Declare the ID for the characteristic by which a client can get the time, in milliseconds,
 // since the last time we asked the AP to reboot itself
@@ -49,6 +46,9 @@ BLEUnsignedLongCharacteristic mrrCharacteristic("43ADDD14-843B-407C-9B40-696E381
 
 // Gives the timestamp of the last iteration, and the last reboot, respectively
 unsigned long mru = 0, mrr = 0;
+
+// Gives the next operation to perform in the main loop
+unsigned int flags = 0;
 
 // Functions
 //
@@ -102,7 +102,6 @@ int GetWANStatus3() {
 
 int RebootWifi() {
   // Ask the AP to reboot
-  stateCharacteristic.writeValue( STATE_REBOOTING );
   int result = Jnap("http://linksys.com/jnap/core/Reboot");
 
   // Capture the timestamp before returning
@@ -150,14 +149,13 @@ int ReadFromCanary(const char* host, const char* path) {
 
 int ReadFromCanaries() {
 
-  stateCharacteristic.writeValue( STATE_READING );
   int count = ReadFromCanary(
     "www.msftconnecttest.com",
     "/connecttest.txt"
   );
   if (count < 1){
     // Fallback to Google's home page,
-    // which shouldn't orindarily
+    // which shouldn't ordinarily
     // require a re-try?
     count = ReadFromCanary(
       "www.google.com",
@@ -168,8 +166,8 @@ int ReadFromCanaries() {
 }
 
 int ConnectToWiFi() {
-  const unsigned long interval   = 500;
-  const unsigned long timeout = 15000;
+  const unsigned long interval = 500;
+  const unsigned long timeout  = 15000;
 
   int status = WiFi.status();
   for (int attempt = 0; (attempt < 3) && (status != WL_CONNECTED); ++attempt) {
@@ -204,12 +202,12 @@ void RestartBLE() {
     delay(200);
   } while (!BLE.begin());
 
-  BLE.setLocalName("JnapUpMon");
+  BLE.setLocalName("Arduino");
   BLE.setAdvertisedService(bleService);
 
   bleService.addCharacteristic(runCharacteristic);
   bleService.addCharacteristic(rebootCharacteristic);
-  bleService.addCharacteristic(stateCharacteristic);
+  bleService.addCharacteristic(resetCharacteristic);
   bleService.addCharacteristic(mrrCharacteristic);
 
   BLE.addService(bleService);
@@ -225,16 +223,18 @@ void StopBLE() {
   BLE.end();
 }
 
-void DoJnapUpMon() {
-  stateCharacteristic.writeValue( STATE_CONNECTING );
+void DoJnapUpMon(bool skipCanary) {
   StopBLE();
 
   const int status = ConnectToWiFi();
   if (status == WL_CONNECTED){
     // Try and make an outbound HTTP call
-    int read = ReadFromCanaries( );
-    Serial.print( "Recv'd: " );
-    Serial.println( String( read ) );
+    int read = 0;
+    if (!skipCanary){
+      read = ReadFromCanaries( );
+      Serial.print( "Recv'd: " );
+      Serial.println( String( read ) );
+    }
     if (read < 1){
       read = RebootWifi( );
       Serial.print( "Recv'd: " );
@@ -285,8 +285,8 @@ void runCharacteristicWritten(BLEDevice central, BLECharacteristic characteristi
   if (runCharacteristic.value( )){
     Serial.println("non-zero.");
 
-    // Do the thing
-    // DoJnapUpMon( );
+    // Set the flag
+    flags |= FLAG_SKIP_WAIT;
 
     // Reset
     runCharacteristic.setValue( 0 );
@@ -305,11 +305,31 @@ void rebootCharacteristicWritten(BLEDevice central, BLECharacteristic characteri
   if (rebootCharacteristic.value( )){
     Serial.println("non-zero.");
 
-    // Reboot the WiFi
-    // RebootWifi( );
+    // Set the flag
+    flags |= (FLAG_SKIP_WAIT | FLAG_SKIP_CANARY);
 
     // Reset
     rebootCharacteristic.setValue( 0 );
+  }else{
+    Serial.println("zero.");
+  }
+}
+
+void resetCharacteristicWritten(BLEDevice central, BLECharacteristic characteristic) {
+  // Unused parameters
+  (void)central;
+  (void)characteristic;
+
+  Serial.print("resetCharacteristicWritten: ");
+  if (resetCharacteristic.value( )){
+    Serial.println("non-zero.");
+
+    // Reset the last reboot timestamp and turn the status LED on
+    mrr = 0;
+    digitalWrite(LED_BUILTIN, HIGH);
+
+    // Reset
+    resetCharacteristic.setValue( 0 );
   }else{
     Serial.println("zero.");
   }
@@ -358,7 +378,8 @@ void SetupBLE() {
   runCharacteristic.setValue(0);
   rebootCharacteristic.setEventHandler(BLEWritten, rebootCharacteristicWritten);
   rebootCharacteristic.setValue(0);
-  stateCharacteristic.setValue( STATE_STARTING );
+  resetCharacteristic.setEventHandler(BLEWritten, resetCharacteristicWritten);
+  resetCharacteristic.setValue(0);
   mrrCharacteristic.setEventHandler(BLERead, mrrCharacteristicRead);
 
   // Start the connection
@@ -379,31 +400,45 @@ void setup() {
   // Configure for Bluetooth
   SetupBLE( );
 
-  // Now that everything is up, we can do the first run
-  DoJnapUpMon( );
+  // Tee up the first run by raising the flag
+  flags |= FLAG_SKIP_WAIT;
 
   // Setup completed; turn the light back on
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
 void loop() {
+  // Get out the flags
+  const bool skipWait = ((flags & FLAG_SKIP_WAIT) == FLAG_SKIP_WAIT);
+  const bool skipCanary = ((flags & FLAG_SKIP_CANARY) == FLAG_SKIP_CANARY);
+  Serial.print("flags = ");
+  Serial.print( flags, HEX );
+  Serial.print( "; skipWait = " );
+  Serial.print( skipWait );
+  Serial.print( "; skipCanary = " );
+  Serial.println( skipCanary );
+  flags = 0;
+
+  // When did we get here - was it because of a timeout
+  // or maybe we were told to just go
   const unsigned long interval = (5 * ONE_MINUTE_MILLIS);
   const unsigned long now = millis( );
+  const unsigned long elapsed = (skipWait)
+    ? (interval + 1)
+    : (now < mru) ? interval : (now - mru);
+
   Serial.print( "Now = " );
   Serial.print( now, DEC );
   Serial.print( "; mru = " );
   Serial.println( mru, DEC );
 
-  // When did we get here - was it because of a timeout
-  const unsigned long elapsed = (now < mru) ? interval : (now - mru);
   if (elapsed >= interval){
     // The clock has either rolled over or the timeout elapsed,
     // so do the thing
-    DoJnapUpMon( );
+    DoJnapUpMon(skipCanary);
   }
 
   // Wait, poll for events from the Bluetooth stack
   const unsigned long timeout = (elapsed < interval) ? (interval - elapsed) : interval;
-  stateCharacteristic.writeValue( STATE_POLLING );
   BLE.poll( timeout );
 }
