@@ -37,6 +37,9 @@ BLEByteCharacteristic runCharacteristic("E2C0FF71-A900-434D-9C39-6465443F3F5A", 
 // Declare the ID for the characteristic by which a client invoke reboot procedure
 BLEByteCharacteristic rebootCharacteristic("143E8851-01C0-49ED-8F37-9D287B6B32C7", BLEWrite);
 
+// Declare the ID for the characteristic by which a client can reset mrr and turn LED on
+BLEByteCharacteristic resetCharacteristic("B6C3D7F2-28E7-4C95-B6AB-65D34D7D9E13", BLEWrite);
+
 // Declare the ID for the characteristic by which a client can get the time, in milliseconds,
 // since the last time we asked the AP to reboot itself
 BLEUnsignedLongCharacteristic mrrCharacteristic("43ADDD14-843B-407C-9B40-696E3819B4AE", BLERead);
@@ -152,7 +155,7 @@ int ReadFromCanaries() {
   );
   if (count < 1){
     // Fallback to Google's home page,
-    // which shouldn't orindarily
+    // which shouldn't ordinarily
     // require a re-try?
     count = ReadFromCanary(
       "www.google.com",
@@ -204,6 +207,7 @@ void RestartBLE() {
 
   bleService.addCharacteristic(runCharacteristic);
   bleService.addCharacteristic(rebootCharacteristic);
+  bleService.addCharacteristic(resetCharacteristic);
   bleService.addCharacteristic(mrrCharacteristic);
 
   BLE.addService(bleService);
@@ -311,6 +315,26 @@ void rebootCharacteristicWritten(BLEDevice central, BLECharacteristic characteri
   }
 }
 
+void resetCharacteristicWritten(BLEDevice central, BLECharacteristic characteristic) {
+  // Unused parameters
+  (void)central;
+  (void)characteristic;
+
+  Serial.print("resetCharacteristicWritten: ");
+  if (resetCharacteristic.value( )){
+    Serial.println("non-zero.");
+
+    // Reset the last reboot timestamp and turn the status LED on
+    mrr = 0;
+    digitalWrite(LED_BUILTIN, HIGH);
+
+    // Reset
+    resetCharacteristic.setValue( 0 );
+  }else{
+    Serial.println("zero.");
+  }
+}
+
 // Read callback fires when a central performs a GATT Read
 void mrrCharacteristicRead(BLEDevice central, BLECharacteristic characteristic) {
   // Unused parameters
@@ -354,6 +378,8 @@ void SetupBLE() {
   runCharacteristic.setValue(0);
   rebootCharacteristic.setEventHandler(BLEWritten, rebootCharacteristicWritten);
   rebootCharacteristic.setValue(0);
+  resetCharacteristic.setEventHandler(BLEWritten, resetCharacteristicWritten);
+  resetCharacteristic.setValue(0);
   mrrCharacteristic.setEventHandler(BLERead, mrrCharacteristicRead);
 
   // Start the connection

@@ -27,16 +27,21 @@ import androidx.annotation.RequiresApi
 import androidx.annotation.RequiresPermission
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -45,8 +50,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -73,6 +82,9 @@ class MainActivity : ComponentActivity() {
 
     // Characteristic UUIDs from the Arduino sketch
     private val CHARACTERISTIC_MRR_UUID = UUID.fromString("43ADDD14-843B-407C-9B40-696E3819B4AE")
+    private val CHARACTERISTIC_RUN_UUID = UUID.fromString("E2C0FF71-A900-434D-9C39-6465443F3F5A")
+    private val CHARACTERISTIC_REBOOT_UUID = UUID.fromString("143E8851-01C0-49ED-8F37-9D287B6B32C7")
+    private val CHARACTERISTIC_RESET_UUID = UUID.fromString("B6C3D7F2-28E7-4C95-B6AB-65D34D7D9E13")
 
     private var bluetoothGatt: BluetoothGatt? = null
 
@@ -155,7 +167,10 @@ class MainActivity : ComponentActivity() {
                 ) { innerPadding ->
                     BleStatusScreen(
                         modifier = Modifier.padding(innerPadding),
-                        uiState = uiState.value
+                        uiState = uiState.value,
+                        onRunClick = { triggerBleAction(CHARACTERISTIC_RUN_UUID, "Run triggered") },
+                        onRebootClick = { triggerBleAction(CHARACTERISTIC_REBOOT_UUID, "Reboot triggered") },
+                        onResetClick = { triggerBleAction(CHARACTERISTIC_RESET_UUID, "Reset triggered") }
                     )
                 }
             }
@@ -245,18 +260,33 @@ class MainActivity : ComponentActivity() {
         scanActive = false
     }
 
-    private fun cancelScan() {
-        stopBleScan()
+    private fun disconnectAndCloseGatt() {
+        val gatt = bluetoothGatt ?: return
         try {
-            bluetoothGatt?.close()
+            gatt.disconnect()
         } catch (_: SecurityException) {
             // ignore
         }
-        bluetoothGatt = null
+        try {
+            gatt.close()
+        } catch (_: SecurityException) {
+            // ignore
+        }
+        if (bluetoothGatt == gatt) {
+            bluetoothGatt = null
+        }
+    }
+
+    private fun cancelScan() {
+        stopBleScan()
+        disconnectAndCloseGatt()
         uiState.value = UiState.Cancelled
     }
 
     private fun resumeScan() {
+        if (uiState.value is UiState.Connected) {
+            disconnectAndCloseGatt()
+        }
         if (checkPermissions()) {
             startBleScan()
         } else {
@@ -267,12 +297,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopBleScan()
-        try {
-            bluetoothGatt?.close()
-        } catch (_: SecurityException) {
-            // ignore
-        }
-        bluetoothGatt = null
+        disconnectAndCloseGatt()
     }
 
     private fun connectToDevice(bleDevice: BleDevice) {
@@ -282,12 +307,7 @@ class MainActivity : ComponentActivity() {
         stopBleScan()
         uiState.value = UiState.Connecting(bleDevice)
 
-        try {
-            bluetoothGatt?.close()
-        } catch (_: SecurityException) {
-            // ignore
-        }
-        bluetoothGatt = null
+        disconnectAndCloseGatt()
 
         try {
             val device = bluetoothAdapter?.getRemoteDevice(bleDevice.address) ?: run {
@@ -297,6 +317,39 @@ class MainActivity : ComponentActivity() {
             bluetoothGatt = device.connectGatt(this, false, gattCallback)
         } catch (_: SecurityException) {
             uiState.value = UiState.Failed(bleDevice)
+        }
+    }
+
+    private fun triggerBleAction(characteristicUuid: UUID, successMessage: String) {
+        val gatt = bluetoothGatt ?: run {
+            Toast.makeText(this, "Device not connected", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val service = gatt.getService(SERVICE_UUID) ?: run {
+            Toast.makeText(this, "Service not available", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val characteristic = service.getCharacteristic(characteristicUuid) ?: run {
+            Toast.makeText(this, "Characteristic not available", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(
+                    characteristic,
+                    byteArrayOf(1),
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                characteristic.value = byteArrayOf(1)
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(characteristic)
+            }
+            Toast.makeText(this, successMessage, Toast.LENGTH_SHORT).show()
+        } catch (_: SecurityException) {
+            Toast.makeText(this, "Permission denied", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -320,6 +373,9 @@ class MainActivity : ComponentActivity() {
                     val current = uiState.value
                     if (current is UiState.Connecting) {
                         uiState.value = UiState.Failed(current.device)
+                    } else if (current is UiState.Connected) {
+                        // If we lose connection while connected, go back to scanning
+                        resumeScan()
                     }
                     if (bluetoothGatt == gatt) {
                         bluetoothGatt = null
@@ -423,11 +479,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     }
-                    try {
-                        gatt.disconnect()
-                    } catch (_: SecurityException) {
-                        // ignore
-                    }
+                    // Do not disconnect, so buttons can be used
                 }
             }
         }
@@ -452,7 +504,10 @@ private fun ByteArray.toUInt32LittleEndian(): ULong {
 @Composable
 fun BleStatusScreen(
     modifier: Modifier = Modifier,
-    uiState: UiState
+    uiState: UiState,
+    onRunClick: () -> Unit,
+    onRebootClick: () -> Unit,
+    onResetClick: () -> Unit
 ) {
     Column(
         modifier = modifier.fillMaxSize(),
@@ -508,7 +563,12 @@ fun BleStatusScreen(
                 }
             }
             is UiState.Connected -> {
-                DeviceCard(device = uiState.device)
+                DeviceCard(
+                    device = uiState.device,
+                    onRunClick = onRunClick,
+                    onRebootClick = onRebootClick,
+                    onResetClick = onResetClick
+                )
             }
             is UiState.Cancelled -> {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -532,8 +592,38 @@ fun BleStatusScreen(
 
 @Composable
 fun DeviceCard(
-    device: BleDevice
+    device: BleDevice,
+    onRunClick: () -> Unit,
+    onRebootClick: () -> Unit,
+    onResetClick: () -> Unit
 ) {
+    var showRebootConfirmation by remember { mutableStateOf(false) }
+
+    if (showRebootConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showRebootConfirmation = false },
+            title = { Text(text = "Confirm Reboot") },
+            text = { Text(text = "Are you sure you want to trigger the JNAP reboot?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRebootConfirmation = false
+                        onRebootClick()
+                    }
+                ) {
+                    Text("Reboot")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showRebootConfirmation = false }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -564,12 +654,61 @@ fun DeviceCard(
                 val mrrText = if (mrr == 0.0) {
                     "Last restart: Never"
                 } else {
-                    "Last restart: ${"%.3f".format(mrr)} s ago"
+                    if (mrr < 1.0) {
+                        "Last restart: Just now"
+                    } else {
+                        val seconds = mrr.toLong()
+                        val days = seconds / 86400
+                        val hours = (seconds % 86400) / 3600
+                        val minutes = (seconds % 3600) / 60
+                        val remainingSeconds = seconds % 60
+
+                        val parts = mutableListOf<String>()
+                        if (days > 0) parts.add("${days}d")
+                        if (hours > 0) parts.add("${hours}h")
+                        if (minutes > 0) parts.add("${minutes}m")
+                        if (remainingSeconds > 0 || parts.isEmpty()) parts.add("${remainingSeconds}s")
+
+                        "Last restart: ${parts.joinToString(" ")} ago"
+                    }
                 }
                 Text(
                     text = mrrText,
                     style = MaterialTheme.typography.bodyLarge
                 )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onRunClick,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Run")
+                }
+                Button(
+                    onClick = { showRebootConfirmation = true },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                ) {
+                    Text("Reboot")
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = onResetClick,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                Text("Reset")
             }
         }
     }
