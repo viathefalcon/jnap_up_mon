@@ -25,8 +25,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.annotation.RequiresPermission
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -35,11 +33,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -49,7 +46,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,12 +54,19 @@ import androidx.core.content.ContextCompat
 import net.viathefalcon.jnapupmon.remote.ui.theme.RemoteTheme
 import java.util.UUID
 
+sealed class UiState {
+    data object Scanning : UiState()
+    data class Connecting(val device: BleDevice) : UiState()
+    data class Failed(val device: BleDevice) : UiState()
+    data class Connected(val device: BleDevice) : UiState()
+    data object Cancelled : UiState()
+}
+
 class MainActivity : ComponentActivity() {
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothLeScanner: BluetoothLeScanner? = null
-    private var isScanning = mutableStateOf(false)
-    private val discoveredDevices = mutableStateListOf<BleDevice>()
-    private var hasAutoStarted = false
+    private var uiState = mutableStateOf<UiState>(UiState.Scanning)
+    private var scanActive = false
 
     // Service UUID from the Arduino sketch
     private val SERVICE_UUID = UUID.fromString("505F8A1F-3872-449E-9167-B3549A5D7A87")
@@ -72,8 +75,7 @@ class MainActivity : ComponentActivity() {
     private val CHARACTERISTIC_MRR_UUID = UUID.fromString("43ADDD14-843B-407C-9B40-696E3819B4AE")
 
     private var bluetoothGatt: BluetoothGatt? = null
-    private var connectingAddress = mutableStateOf<String?>(null)
-    
+
     private val requestPermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -93,19 +95,9 @@ class MainActivity : ComponentActivity() {
                         address = scanResult.device.address,
                         rssi = scanResult.rssi
                     )
-                    
-                    // Update device if exists (preserve characteristic values), otherwise add new
-                    val existingIndex = discoveredDevices.indexOfFirst { it.address == foundDevice.address }
-                    if (existingIndex >= 0) {
-                        discoveredDevices[existingIndex] = discoveredDevices[existingIndex].copy(
-                            name = foundDevice.name,
-                            rssi = foundDevice.rssi
-                        )
-                    } else {
-                        discoveredDevices.add(foundDevice)
-                    }
+                    // Auto-connect to the first discovered device
+                    connectToDevice(foundDevice)
                 } catch (_: SecurityException) {
-                    // Permission was revoked during scan
                     stopBleScan()
                 }
             }
@@ -117,7 +109,7 @@ class MainActivity : ComponentActivity() {
                 "Scan failed with error: $errorCode",
                 Toast.LENGTH_LONG
             ).show()
-            isScanning.value = false
+            scanActive = false
         }
     }
     
@@ -139,22 +131,31 @@ class MainActivity : ComponentActivity() {
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
                     floatingActionButton = {
+                        val state = uiState.value
                         FloatingActionButton(
-                            onClick = { toggleScan() }
+                            onClick = {
+                                when (state) {
+                                    is UiState.Scanning, is UiState.Connecting -> cancelScan()
+                                    is UiState.Cancelled, is UiState.Connected, is UiState.Failed -> resumeScan()
+                                }
+                            }
                         ) {
                             Icon(
-                                imageVector = if (isScanning.value) Icons.Filled.Close else Icons.Filled.Refresh,
-                                contentDescription = if (isScanning.value) "Stop scanning" else "Restart scanning"
+                                imageVector = when (state) {
+                                    is UiState.Scanning, is UiState.Connecting -> Icons.Filled.Close
+                                    else -> Icons.Filled.Refresh
+                                },
+                                contentDescription = when (state) {
+                                    is UiState.Scanning, is UiState.Connecting -> "Cancel"
+                                    else -> "Rescan"
+                                }
                             )
                         }
                     }
                 ) { innerPadding ->
-                    BleScanner(
+                    BleStatusScreen(
                         modifier = Modifier.padding(innerPadding),
-                        isScanning = isScanning.value,
-                        devices = discoveredDevices,
-                        connectingAddress = connectingAddress.value,
-                        onDeviceTapped = { device -> connectToDevice(device) }
+                        uiState = uiState.value
                     )
                 }
             }
@@ -163,22 +164,8 @@ class MainActivity : ComponentActivity() {
     
     override fun onResume() {
         super.onResume()
-        
-        // Automatically start scanning when the activity first launches
-        if (!hasAutoStarted) {
-            hasAutoStarted = true
-            if (checkPermissions()) {
-                startBleScan()
-            } else {
-                requestPermissions()
-            }
-        }
-    }
-    
-    private fun toggleScan() {
-        if (isScanning.value) {
-            stopBleScan()
-        } else {
+
+        if (uiState.value is UiState.Scanning && !scanActive) {
             if (checkPermissions()) {
                 startBleScan()
             } else {
@@ -228,21 +215,22 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Please enable Bluetooth", Toast.LENGTH_SHORT).show()
             return
         }
-        
-        // Don't clear devices - keep accumulating discoveries
+
+        uiState.value = UiState.Scanning
+
         val scanFilter = ScanFilter.Builder()
             .setServiceUuid(ParcelUuid(SERVICE_UUID))
             .build()
-        
+
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-            .setReportDelay(0) // Report immediately for continuous updates
+            .setReportDelay(0)
             .build()
-        
+
         try {
             bluetoothLeScanner?.startScan(listOf(scanFilter), scanSettings, scanCallback)
-            isScanning.value = true
+            scanActive = true
         } catch (_: SecurityException) {
             Toast.makeText(this, "Permission denied", Toast.LENGTH_SHORT).show()
         }
@@ -254,7 +242,26 @@ class MainActivity : ComponentActivity() {
         } catch (_: SecurityException) {
             // Ignore
         }
-        isScanning.value = false
+        scanActive = false
+    }
+
+    private fun cancelScan() {
+        stopBleScan()
+        try {
+            bluetoothGatt?.close()
+        } catch (_: SecurityException) {
+            // ignore
+        }
+        bluetoothGatt = null
+        uiState.value = UiState.Cancelled
+    }
+
+    private fun resumeScan() {
+        if (checkPermissions()) {
+            startBleScan()
+        } else {
+            requestPermissions()
+        }
     }
     
     override fun onDestroy() {
@@ -269,36 +276,27 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun connectToDevice(bleDevice: BleDevice) {
-        if (connectingAddress.value != null) return
-
-        // If the card is already expanded, collapse it and resume scanning instead
-        val deviceIndex = discoveredDevices.indexOfFirst { it.address == bleDevice.address }
-        val existingDevice = if (deviceIndex >= 0) discoveredDevices[deviceIndex] else null
-        if (existingDevice != null && (existingDevice.mrr != null)) {
-            discoveredDevices[deviceIndex] = existingDevice.copy(mrr = null)
-            if (checkPermissions()) {
-                startBleScan()
-            }
-            return
-        }
+        val currentState = uiState.value
+        if (currentState is UiState.Connecting || currentState is UiState.Connected) return
 
         stopBleScan()
+        uiState.value = UiState.Connecting(bleDevice)
+
         try {
             bluetoothGatt?.close()
         } catch (_: SecurityException) {
             // ignore
         }
         bluetoothGatt = null
-        connectingAddress.value = bleDevice.address
+
         try {
             val device = bluetoothAdapter?.getRemoteDevice(bleDevice.address) ?: run {
-                connectingAddress.value = null
+                uiState.value = UiState.Failed(bleDevice)
                 return
             }
             bluetoothGatt = device.connectGatt(this, false, gattCallback)
-        } catch (e: SecurityException) {
-            Toast.makeText(this, e.message, Toast.LENGTH_SHORT).show()
-            connectingAddress.value = null
+        } catch (_: SecurityException) {
+            uiState.value = UiState.Failed(bleDevice)
         }
     }
 
@@ -309,13 +307,19 @@ class MainActivity : ComponentActivity() {
                 try {
                     gatt.discoverServices()
                 } catch (_: SecurityException) {
-                    runOnUiThread { connectingAddress.value = null }
+                    runOnUiThread {
+                        val current = uiState.value
+                        if (current is UiState.Connecting) {
+                            uiState.value = UiState.Failed(current.device)
+                        }
+                    }
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 gatt.close()
                 runOnUiThread {
-                    if (connectingAddress.value == gatt.device.address) {
-                        connectingAddress.value = null
+                    val current = uiState.value
+                    if (current is UiState.Connecting) {
+                        uiState.value = UiState.Failed(current.device)
                     }
                     if (bluetoothGatt == gatt) {
                         bluetoothGatt = null
@@ -332,14 +336,29 @@ class MainActivity : ComponentActivity() {
                     if (mrrCharacteristic != null) {
                         gatt.readCharacteristic(mrrCharacteristic)
                     } else {
-                        runOnUiThread { connectingAddress.value = null }
+                        runOnUiThread {
+                            val current = uiState.value
+                            if (current is UiState.Connecting) {
+                                uiState.value = UiState.Failed(current.device)
+                            }
+                        }
                         gatt.disconnect()
                     }
                 } catch (_: SecurityException) {
-                    runOnUiThread { connectingAddress.value = null }
+                    runOnUiThread {
+                        val current = uiState.value
+                        if (current is UiState.Connecting) {
+                            uiState.value = UiState.Failed(current.device)
+                        }
+                    }
                 }
             } else {
-                runOnUiThread { connectingAddress.value = null }
+                runOnUiThread {
+                    val current = uiState.value
+                    if (current is UiState.Connecting) {
+                        uiState.value = UiState.Failed(current.device)
+                    }
+                }
                 try {
                     gatt.disconnect()
                 } catch (_: SecurityException) {
@@ -379,7 +398,12 @@ class MainActivity : ComponentActivity() {
             status: Int
         ) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                runOnUiThread { connectingAddress.value = null }
+                runOnUiThread {
+                    val current = uiState.value
+                    if (current is UiState.Connecting) {
+                        uiState.value = UiState.Failed(current.device)
+                    }
+                }
                 try {
                     gatt.disconnect()
                 } catch (_: SecurityException) {
@@ -387,17 +411,17 @@ class MainActivity : ComponentActivity() {
                 }
                 return
             }
-            val address = gatt.device.address
             when (characteristic.uuid) {
                 CHARACTERISTIC_MRR_UUID -> {
                     val mrrMs = value.toUInt32LittleEndian()
                     val mrrSeconds = mrrMs.toDouble() / 1000.0
                     runOnUiThread {
-                        val idx = discoveredDevices.indexOfFirst { it.address == address }
-                        if (idx >= 0) {
-                            discoveredDevices[idx] = discoveredDevices[idx].copy(mrr = mrrSeconds)
+                        val current = uiState.value
+                        if (current is UiState.Connecting) {
+                            uiState.value = UiState.Connected(
+                                current.device.copy(mrr = mrrSeconds)
+                            )
                         }
-                        connectingAddress.value = null
                     }
                     try {
                         gatt.disconnect()
@@ -426,68 +450,94 @@ private fun ByteArray.toUInt32LittleEndian(): ULong {
 }
 
 @Composable
-fun BleScanner(
+fun BleStatusScreen(
     modifier: Modifier = Modifier,
-    isScanning: Boolean,
-    devices: List<BleDevice>,
-    connectingAddress: String? = null,
-    onDeviceTapped: (BleDevice) -> Unit = {}
+    uiState: UiState
 ) {
-    Box(modifier = modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+    Column(
+        modifier = modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "JNAP UpMon",
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.padding(top = 16.dp, bottom = 16.dp)
+        )
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "JNAP UpMon",
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
-            
-            Text(
-                text = if (isScanning) "Scanning..." else "Scanning stopped",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (isScanning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
-            
-            if (devices.isEmpty()) {
-                Text(
-                    text = if (isScanning) "Waiting for devices..." else "No devices found",
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.padding(16.dp)
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(devices) { device ->
-                        DeviceCard(
-                            device = device,
-                            isConnecting = device.address == connectingAddress,
-                            onTap = { onDeviceTapped(device) }
-                        )
-                    }
+        when (uiState) {
+            is UiState.Scanning -> {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(modifier = Modifier.size(48.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Scanning...",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
                 }
             }
+            is UiState.Connecting -> {
+                val label = uiState.device.name.takeIf { it != "Unnamed Device" }
+                    ?: uiState.device.address
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(modifier = Modifier.size(48.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Connecting to $label...",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            }
+            is UiState.Failed -> {
+                val label = uiState.device.name.takeIf { it != "Unnamed Device" }
+                    ?: uiState.device.address
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Filled.Warning,
+                        contentDescription = "Warning",
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Failed to connect to $label",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            }
+            is UiState.Connected -> {
+                DeviceCard(device = uiState.device)
+            }
+            is UiState.Cancelled -> {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Filled.Warning,
+                        contentDescription = "Cancelled",
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Cancelled",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            }
+        }
         }
     }
 }
 
 @Composable
 fun DeviceCard(
-    device: BleDevice,
-    isConnecting: Boolean = false,
-    onTap: () -> Unit = {}
+    device: BleDevice
 ) {
-    val isExpanded = device.mrr != null
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = !isConnecting) { onTap() },
+            .padding(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
         Column(
@@ -497,36 +547,29 @@ fun DeviceCard(
         ) {
             Text(
                 text = device.name,
-                style = MaterialTheme.typography.titleMedium
+                style = MaterialTheme.typography.titleLarge
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "Address: ${device.address}",
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyLarge
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "Signal: ${device.rssi} dBm",
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyLarge
             )
-            if (isConnecting) {
+            device.mrr?.let { mrr ->
                 Spacer(modifier = Modifier.height(8.dp))
-                CircularProgressIndicator(modifier = Modifier.size(24.dp))
-            }
-            if (isExpanded) {
-                Spacer(modifier = Modifier.height(8.dp))
-                device.mrr.let { mrr ->
-                    Spacer(modifier = Modifier.height(4.dp))
-                    val mrrText = if (mrr == 0.0) {
-                        "Last restart: Never"
-                    } else {
-                        "Last restart: ${"%.3f".format(mrr)} s ago"
-                    }
-                    Text(
-                        text = mrrText,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                val mrrText = if (mrr == 0.0) {
+                    "Last restart: Never"
+                } else {
+                    "Last restart: ${"%.3f".format(mrr)} s ago"
                 }
+                Text(
+                    text = mrrText,
+                    style = MaterialTheme.typography.bodyLarge
+                )
             }
         }
     }
