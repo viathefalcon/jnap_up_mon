@@ -95,6 +95,27 @@
   <data name="Status_ScanStopped" xml:space="preserve">
     <value>Scanning stopped. Is Bluetooth turned on?</value>
   </data>
+  <data name="Status_ScanStopped_NoAdapter" xml:space="preserve">
+    <value>Scanning stopped because no Bluetooth adapter is available.</value>
+  </data>
+  <data name="Status_ScanStopped_BluetoothOff" xml:space="preserve">
+    <value>Scanning stopped because Bluetooth was turned off.</value>
+  </data>
+  <data name="Status_ScanStopped_BluetoothDisabled" xml:space="preserve">
+    <value>Scanning stopped because Bluetooth is disabled.</value>
+  </data>
+  <data name="Status_ScanStopped_BluetoothUnavailable" xml:space="preserve">
+    <value>Scanning stopped because Bluetooth became unavailable.</value>
+  </data>
+  <data name="Status_BluetoothNoAdapter" xml:space="preserve">
+    <value>No Bluetooth adapter was found on this machine.</value>
+  </data>
+  <data name="Status_BluetoothOff" xml:space="preserve">
+    <value>Bluetooth is turned off. Turn it on to scan for devices.</value>
+  </data>
+  <data name="Status_BluetoothDisabled" xml:space="preserve">
+    <value>Bluetooth is disabled by policy or driver state.</value>
+  </data>
   <data name="Status_BluetoothUnavailable" xml:space="preserve">
     <value>Bluetooth is unavailable. Turn it on to scan for devices.</value>
   </data>

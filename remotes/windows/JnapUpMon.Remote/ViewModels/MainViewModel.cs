@@ -123,21 +123,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public void Start()
     {
         _maintenanceTimer.Start();
-        TryStartScanning();
+        _ = TryStartScanningAsync();
     }
 
     /// <summary>
     /// Attempts to (re)start the background scan, updating the status text to
     /// reflect whether the Bluetooth radio is available.
     /// </summary>
-    private void TryStartScanning()
+    private async Task TryStartScanningAsync()
     {
         if (_scanner.IsRunning)
         {
             return;
         }
 
-        if (_scanner.Start())
+        UpMonScanStartResult result = await _scanner.StartAsync();
+        if (result == UpMonScanStartResult.Started ||
+            result == UpMonScanStartResult.AlreadyRunning)
         {
             if (!IsConnected)
             {
@@ -146,7 +148,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         else if (!IsConnected)
         {
-            StatusText = Localizer.Get("Status_BluetoothUnavailable");
+            StatusText = Localizer.Get(GetStatusKeyForStartFailure(result));
         }
     }
 
@@ -180,12 +182,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         });
     }
 
-    private void OnScannerStopped(object? sender, EventArgs e)
+    private void OnScannerStopped(object? sender, UpMonScannerStoppedEventArgs e)
         => _dispatcher.TryEnqueue(() =>
         {
             if (!IsConnected)
             {
-                StatusText = Localizer.Get("Status_ScanStopped");
+                StatusText = Localizer.Get(GetStatusKeyForStopReason(e.Reason));
             }
         });
 
@@ -193,8 +195,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         // Keep trying to bring scanning up; the radio may have been turned on
         // after the app started, or recovered after being switched off.
-        TryStartScanning();
+        _ = TryStartScanningAsync();
     }
+
+    private static string GetStatusKeyForStartFailure(UpMonScanStartResult result)
+        => result switch
+        {
+            UpMonScanStartResult.NoBluetoothAdapter => "Status_BluetoothNoAdapter",
+            UpMonScanStartResult.BluetoothTurnedOff => "Status_BluetoothOff",
+            UpMonScanStartResult.BluetoothDisabled => "Status_BluetoothDisabled",
+            UpMonScanStartResult.BluetoothUnavailable => "Status_BluetoothUnavailable",
+            _ => "Status_BluetoothUnavailable",
+        };
+
+    private static string GetStatusKeyForStopReason(UpMonScanStoppedReason reason)
+        => reason switch
+        {
+            UpMonScanStoppedReason.NoBluetoothAdapter => "Status_ScanStopped_NoAdapter",
+            UpMonScanStoppedReason.BluetoothTurnedOff => "Status_ScanStopped_BluetoothOff",
+            UpMonScanStoppedReason.BluetoothDisabled => "Status_ScanStopped_BluetoothDisabled",
+            UpMonScanStoppedReason.BluetoothUnavailable => "Status_ScanStopped_BluetoothUnavailable",
+            _ => "Status_ScanStopped",
+        };
 
     private async Task ConnectToSelectedAsync()
     {

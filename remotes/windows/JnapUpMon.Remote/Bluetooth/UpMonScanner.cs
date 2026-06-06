@@ -1,5 +1,9 @@
 using System;
+using System.Linq;
+using System.Threading.Tasks;
+using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
+using Windows.Devices.Radios;
 
 namespace Net.ViaTheFalcon.JnapUpMon.Remote.Bluetooth;
 
@@ -17,6 +21,50 @@ public sealed class UpMonAdvertisementEventArgs : EventArgs
     public ulong BluetoothAddress { get; }
 
     public string? LocalName { get; }
+}
+
+/// <summary>
+/// The outcome of trying to start BLE advertisement scanning.
+/// </summary>
+public enum UpMonScanStartResult
+{
+    Started,
+    AlreadyRunning,
+    NoBluetoothAdapter,
+    BluetoothTurnedOff,
+    BluetoothDisabled,
+    BluetoothUnavailable,
+    Failed,
+}
+
+/// <summary>
+/// Why the scanner stopped after previously running.
+/// </summary>
+public enum UpMonScanStoppedReason
+{
+    Unknown,
+    NoBluetoothAdapter,
+    BluetoothTurnedOff,
+    BluetoothDisabled,
+    BluetoothUnavailable,
+}
+
+/// <summary>
+/// Carries diagnostics for why scanning stopped.
+/// </summary>
+public sealed class UpMonScannerStoppedEventArgs : EventArgs
+{
+    public UpMonScannerStoppedEventArgs(
+        UpMonScanStoppedReason reason,
+        BluetoothError bluetoothError)
+    {
+        Reason = reason;
+        BluetoothError = bluetoothError;
+    }
+
+    public UpMonScanStoppedReason Reason { get; }
+
+    public BluetoothError BluetoothError { get; }
 }
 
 /// <summary>
@@ -47,34 +95,43 @@ public sealed class UpMonScanner
     /// <summary>Raised on a background thread for each matching advertisement.</summary>
     public event EventHandler<UpMonAdvertisementEventArgs>? Discovered;
 
-    /// <summary>Raised when the underlying watcher stops (e.g. the radio is turned off).</summary>
-    public event EventHandler? Stopped;
+    /// <summary>
+    /// Raised when the underlying watcher stops, including diagnostics about why.
+    /// </summary>
+    public event EventHandler<UpMonScannerStoppedEventArgs>? Stopped;
 
     public bool IsRunning =>
         _watcher.Status == BluetoothLEAdvertisementWatcherStatus.Started;
 
     /// <summary>
-    /// Attempts to start background scanning. Returns <c>false</c> (rather than
-    /// throwing) when the Bluetooth radio is off or otherwise unavailable, so the
-    /// caller can surface a friendly message and retry later.
+    /// Attempts to start background scanning and returns a detailed outcome that
+    /// distinguishes adapter absence from radio-off and other unavailable states.
     /// </summary>
-    public bool Start()
+    public async Task<UpMonScanStartResult> StartAsync()
     {
         if (_watcher.Status == BluetoothLEAdvertisementWatcherStatus.Started)
         {
-            return true;
+            return UpMonScanStartResult.AlreadyRunning;
+        }
+
+        UpMonScanStartResult availability = await GetAvailabilityAsync();
+        if (availability != UpMonScanStartResult.Started)
+        {
+            return availability;
         }
 
         try
         {
             _watcher.Start();
-            return true;
+            return UpMonScanStartResult.Started;
         }
         catch (Exception)
         {
-            // Typically ERROR_DEVICE_NOT_AVAILABLE (0x800710DF) when Bluetooth is
-            // turned off or there is no BLE adapter present.
-            return false;
+            // Re-check availability in case the radio changed between probing and start.
+            UpMonScanStartResult current = await GetAvailabilityAsync();
+            return current == UpMonScanStartResult.Started
+                ? UpMonScanStartResult.Failed
+                : current;
         }
     }
 
@@ -108,5 +165,70 @@ public sealed class UpMonScanner
     private void OnStopped(
         BluetoothLEAdvertisementWatcher sender,
         BluetoothLEAdvertisementWatcherStoppedEventArgs args)
-        => Stopped?.Invoke(this, EventArgs.Empty);
+        => _ = RaiseStoppedAsync(args.Error);
+
+    private async Task RaiseStoppedAsync(BluetoothError error)
+    {
+        UpMonScanStoppedReason reason = await GetStoppedReasonAsync(error);
+        Stopped?.Invoke(this, new UpMonScannerStoppedEventArgs(reason, error));
+    }
+
+    private static async Task<UpMonScanStartResult> GetAvailabilityAsync()
+    {
+        try
+        {
+            BluetoothAdapter? adapter = await BluetoothAdapter.GetDefaultAsync();
+            if (adapter is null)
+            {
+                return UpMonScanStartResult.NoBluetoothAdapter;
+            }
+
+            var radios = await Radio.GetRadiosAsync();
+            Radio? bluetoothRadio = radios.FirstOrDefault(r => r.Kind == RadioKind.Bluetooth);
+            if (bluetoothRadio is null)
+            {
+                return UpMonScanStartResult.NoBluetoothAdapter;
+            }
+
+            return bluetoothRadio.State switch
+            {
+                RadioState.On => UpMonScanStartResult.Started,
+                RadioState.Off => UpMonScanStartResult.BluetoothTurnedOff,
+                RadioState.Disabled => UpMonScanStartResult.BluetoothDisabled,
+                _ => UpMonScanStartResult.BluetoothUnavailable,
+            };
+        }
+        catch
+        {
+            return UpMonScanStartResult.BluetoothUnavailable;
+        }
+    }
+
+    private static async Task<UpMonScanStoppedReason> GetStoppedReasonAsync(BluetoothError error)
+    {
+        UpMonScanStartResult availability = await GetAvailabilityAsync();
+        if (availability == UpMonScanStartResult.NoBluetoothAdapter)
+        {
+            return UpMonScanStoppedReason.NoBluetoothAdapter;
+        }
+
+        if (availability == UpMonScanStartResult.BluetoothTurnedOff)
+        {
+            return UpMonScanStoppedReason.BluetoothTurnedOff;
+        }
+
+        if (availability == UpMonScanStartResult.BluetoothDisabled)
+        {
+            return UpMonScanStoppedReason.BluetoothDisabled;
+        }
+
+        if (availability == UpMonScanStartResult.BluetoothUnavailable)
+        {
+            return UpMonScanStoppedReason.BluetoothUnavailable;
+        }
+
+        return error == BluetoothError.RadioNotAvailable
+            ? UpMonScanStoppedReason.BluetoothUnavailable
+            : UpMonScanStoppedReason.Unknown;
+    }
 }
