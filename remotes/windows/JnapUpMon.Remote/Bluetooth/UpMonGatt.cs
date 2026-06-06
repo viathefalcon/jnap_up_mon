@@ -15,6 +15,10 @@ internal static class UpMonGatt
     public static readonly Guid MrrCharacteristicUuid =
         new("43ADDD14-843B-407C-9B40-696E3819B4AE");
 
+    /// <summary>Read/notify: milliseconds elapsed since the most recent run (iteration).</summary>
+    public static readonly Guid MruCharacteristicUuid =
+        new("B0F3D2C1-4A5E-4F89-9B2C-1D3E5F7A9B0C");
+
     /// <summary>Write: triggers the connect/read/reboot procedure immediately.</summary>
     public static readonly Guid RunCharacteristicUuid =
         new("E2C0FF71-A900-434D-9C39-6465443F3F5A");

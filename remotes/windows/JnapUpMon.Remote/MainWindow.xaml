@@ -16,6 +16,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -37,7 +38,7 @@
                       SelectedItem="{x:Bind ViewModel.SelectedInstance, Mode=TwoWay}" />
         </StackPanel>
 
-        <!-- Read-only characteristic: most recent reboot -->
+        <!-- Read/notify characteristic: most recent reboot -->
         <StackPanel Grid.Row="2" Spacing="6">
             <TextBlock x:Uid="MrrLabel"
                        Style="{ThemeResource BodyStrongTextBlockStyle}" />
@@ -48,8 +49,19 @@
                      Text="{x:Bind ViewModel.MrrText, Mode=OneWay}" />
         </StackPanel>
 
-        <!-- Writable characteristics: action buttons -->
+        <!-- Read/notify characteristic: most recent run -->
         <StackPanel Grid.Row="3" Spacing="6">
+            <TextBlock x:Uid="MruLabel"
+                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            <TextBox IsReadOnly="True"
+                     AcceptsReturn="False"
+                     TextWrapping="NoWrap"
+                     IsEnabled="{x:Bind ViewModel.IsConnected, Mode=OneWay}"
+                     Text="{x:Bind ViewModel.MruText, Mode=OneWay}" />
+        </StackPanel>
+
+        <!-- Writable characteristics: action buttons -->
+        <StackPanel Grid.Row="4" Spacing="6">
             <TextBlock x:Uid="ActionsLabel"
                        Style="{ThemeResource BodyStrongTextBlockStyle}" />
             <StackPanel Orientation="Horizontal" Spacing="8">
@@ -62,14 +74,11 @@
                 <Button x:Uid="ResetButton"
                         MinWidth="96"
                         Command="{x:Bind ViewModel.ResetCommand}" />
-                <Button x:Uid="RefreshButton"
-                        MinWidth="96"
-                        Command="{x:Bind ViewModel.RefreshCommand}" />
             </StackPanel>
         </StackPanel>
 
         <!-- Status line -->
-        <TextBlock Grid.Row="5"
+        <TextBlock Grid.Row="6"
                    VerticalAlignment="Bottom"
                    Style="{ThemeResource CaptionTextBlockStyle}"
                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"

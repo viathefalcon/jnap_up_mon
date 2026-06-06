@@ -41,8 +41,14 @@ BLEByteCharacteristic rebootCharacteristic("143E8851-01C0-49ED-8F37-9D287B6B32C7
 BLEByteCharacteristic resetCharacteristic("B6C3D7F2-28E7-4C95-B6AB-65D34D7D9E13", BLEWrite);
 
 // Declare the ID for the characteristic by which a client can get the time, in milliseconds,
-// since the last time we asked the AP to reboot itself
-BLEUnsignedLongCharacteristic mrrCharacteristic("43ADDD14-843B-407C-9B40-696E3819B4AE", BLERead);
+// since the last time we asked the AP to reboot itself. Readable and notifyable so a subscribed
+// client is pushed the new value whenever the reboot timestamp changes.
+BLEUnsignedLongCharacteristic mrrCharacteristic("43ADDD14-843B-407C-9B40-696E3819B4AE", BLERead | BLENotify);
+
+// Declare the ID for the characteristic by which a client can get the time, in milliseconds,
+// since the most recent run (iteration). Readable and notifyable so a subscribed client is
+// pushed the new value whenever a run completes.
+BLEUnsignedLongCharacteristic mruCharacteristic("B0F3D2C1-4A5E-4F89-9B2C-1D3E5F7A9B0C", BLERead | BLENotify);
 
 // Gives the timestamp of the last iteration, and the last reboot, respectively
 unsigned long mru = 0, mrr = 0;
@@ -106,6 +112,7 @@ int RebootWifi() {
 
   // Capture the timestamp before returning
   mrr = millis( );
+  UpdateMrrCharacteristic();
   return result;
 }
 
@@ -209,6 +216,7 @@ void RestartBLE() {
   bleService.addCharacteristic(rebootCharacteristic);
   bleService.addCharacteristic(resetCharacteristic);
   bleService.addCharacteristic(mrrCharacteristic);
+  bleService.addCharacteristic(mruCharacteristic);
 
   BLE.addService(bleService);
   BLE.advertise();
@@ -221,6 +229,46 @@ void StopBLE() {
   BLE.stopAdvertise();
   BLE.disconnect();
   BLE.end();
+}
+
+// Computes the milliseconds elapsed since the most recent reboot request and pushes it into
+// the mrr characteristic. A subscribed central receives a notification with the new value.
+// 0 means "never" (no reboot yet, or reset); ULONG_MAX means the clock rolled over.
+void UpdateMrrCharacteristic() {
+  if (mrr == 0) {
+    // Never rebooted (or it was reset).
+    mrrCharacteristic.writeValue( 0 );
+    return;
+  }
+
+  const unsigned long now = millis( );
+  if (mrr >= now) {
+    // Clock has (probably) rolled over so we can't really know.
+    mrrCharacteristic.writeValue( ULONG_MAX );
+    return;
+  }
+
+  mrrCharacteristic.writeValue( now - mrr );
+}
+
+// Computes the milliseconds elapsed since the most recent run and pushes it into the
+// mru characteristic. A subscribed central receives a notification with the new value.
+// ULONG_MAX is used as a sentinel for "unknown" (no run yet, or the clock rolled over).
+void UpdateMruCharacteristic() {
+  if (mru == 0) {
+    // No run has completed yet.
+    mruCharacteristic.writeValue( ULONG_MAX );
+    return;
+  }
+
+  const unsigned long now = millis( );
+  if (mru >= now) {
+    // Clock has (probably) rolled over so we can't really know.
+    mruCharacteristic.writeValue( ULONG_MAX );
+    return;
+  }
+
+  mruCharacteristic.writeValue( now - mru );
 }
 
 void DoJnapUpMon(bool skipCanary) {
@@ -251,6 +299,8 @@ void DoJnapUpMon(bool skipCanary) {
 
   // Capture the timestamp and bring the BLE stack back up before returning
   mru = millis( );
+  UpdateMruCharacteristic( );
+  UpdateMrrCharacteristic( );
   RestartBLE( );
 }
 
@@ -327,6 +377,7 @@ void resetCharacteristicWritten(BLEDevice central, BLECharacteristic characteris
     // Reset the last reboot timestamp and turn the status LED on
     mrr = 0;
     digitalWrite(LED_BUILTIN, HIGH);
+    UpdateMrrCharacteristic( );
 
     // Reset
     resetCharacteristic.setValue( 0 );
@@ -341,25 +392,16 @@ void mrrCharacteristicRead(BLEDevice central, BLECharacteristic characteristic) 
   (void)central;
   (void)characteristic;
 
-  // Look for an early out
-  if (mrr == 0){
-    // Never
-    mrrCharacteristic.writeValue( 0 );
-    return;
-  }
+  UpdateMrrCharacteristic( );
+}
 
-  const unsigned long now = millis( );
-  if (mrr >= now){
-    // Clock has (probably) rolled over so we can't really know..
-    mrrCharacteristic.writeValue( ULONG_MAX );
-    return;
-  }
+// Read callback fires when a central performs a GATT Read of the mru characteristic
+void mruCharacteristicRead(BLEDevice central, BLECharacteristic characteristic) {
+  // Unused parameters
+  (void)central;
+  (void)characteristic;
 
-  const unsigned long value = (now - mrr);
-  Serial.print( "Calculated " );
-  Serial.print( value, DEC );
-  Serial.println( " as the delta since the last restart." );
-  mrrCharacteristic.writeValue( value );
+  UpdateMruCharacteristic( );
 }
 
 void onBLEConnected(BLEDevice central) {
@@ -381,6 +423,9 @@ void SetupBLE() {
   resetCharacteristic.setEventHandler(BLEWritten, resetCharacteristicWritten);
   resetCharacteristic.setValue(0);
   mrrCharacteristic.setEventHandler(BLERead, mrrCharacteristicRead);
+  mruCharacteristic.setEventHandler(BLERead, mruCharacteristicRead);
+  UpdateMrrCharacteristic( );
+  UpdateMruCharacteristic( );
 
   // Start the connection
   RestartBLE();

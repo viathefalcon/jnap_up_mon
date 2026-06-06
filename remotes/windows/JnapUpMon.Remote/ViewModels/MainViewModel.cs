@@ -20,8 +20,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     // unless they belong to the currently selected instance.
     private static readonly TimeSpan StaleThreshold = TimeSpan.FromSeconds(30);
 
-    // How often the read-only characteristics are re-read while connected.
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
+    // How often background maintenance (scan recovery, stale pruning) runs.
+    private static readonly TimeSpan MaintenanceInterval = TimeSpan.FromSeconds(5);
 
     private readonly DispatcherQueue _dispatcher;
     private readonly UpMonScanner _scanner;
@@ -33,6 +33,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private string _statusText;
     private string _mrrText;
+    private string _mruText;
     private bool _isConnected;
 
     public MainViewModel()
@@ -43,17 +44,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         _statusText = Localizer.Get("Status_Scanning");
         _mrrText = Localizer.Get("Mrr_Unknown");
+        _mruText = Localizer.Get("Mru_Unknown");
 
         RunCommand = new AsyncRelayCommand(() => TriggerAsync(UpMonAction.Run), () => IsConnected);
         RebootCommand = new AsyncRelayCommand(() => TriggerAsync(UpMonAction.Reboot), () => IsConnected);
         ResetCommand = new AsyncRelayCommand(() => TriggerAsync(UpMonAction.Reset), () => IsConnected);
-        RefreshCommand = new AsyncRelayCommand(RefreshAsync, () => IsConnected);
 
         _scanner = new UpMonScanner();
         _scanner.Discovered += OnInstanceDiscovered;
         _scanner.Stopped += OnScannerStopped;
 
-        _maintenanceTimer = new DispatcherTimer { Interval = RefreshInterval };
+        _maintenanceTimer = new DispatcherTimer { Interval = MaintenanceInterval };
         _maintenanceTimer.Tick += OnMaintenanceTick;
     }
 
@@ -64,8 +65,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public AsyncRelayCommand RebootCommand { get; }
 
     public AsyncRelayCommand ResetCommand { get; }
-
-    public AsyncRelayCommand RefreshCommand { get; }
 
     /// <summary>The instance currently chosen in the drop down.</summary>
     public UpMonInstance? SelectedInstance
@@ -99,6 +98,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         private set => SetField(ref _mrrText, value);
     }
 
+    /// <summary>Localised representation of the "most recent run" characteristic.</summary>
+    public string MruText
+    {
+        get => _mruText;
+        private set => SetField(ref _mruText, value);
+    }
+
     public bool IsConnected
     {
         get => _isConnected;
@@ -109,7 +115,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 RunCommand.RaiseCanExecuteChanged();
                 RebootCommand.RaiseCanExecuteChanged();
                 ResetCommand.RaiseCanExecuteChanged();
-                RefreshCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -189,27 +194,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // Keep trying to bring scanning up; the radio may have been turned on
         // after the app started, or recovered after being switched off.
         TryStartScanning();
-
-        PruneStaleInstances();
-
-        if (IsConnected)
-        {
-            _ = RefreshAsync();
-        }
-    }
-
-    private void PruneStaleInstances()
-    {
-        DateTimeOffset cutoff = DateTimeOffset.UtcNow - StaleThreshold;
-        for (int i = Instances.Count - 1; i >= 0; i--)
-        {
-            UpMonInstance instance = Instances[i];
-            if (instance.LastSeen < cutoff &&
-                !ReferenceEquals(instance, _selectedInstance))
-            {
-                Instances.RemoveAt(i);
-            }
-        }
     }
 
     private async Task ConnectToSelectedAsync()
@@ -221,6 +205,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         TearDownConnection();
         IsConnected = false;
         MrrText = Localizer.Get("Mrr_Unknown");
+        MruText = Localizer.Get("Mru_Unknown");
 
         UpMonInstance? target = _selectedInstance;
         if (target is null)
@@ -251,11 +236,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (connection is null)
         {
             StatusText = Localizer.Format("Status_Failed", target.DisplayName);
+
+            // Remove the failed instance from the scanned list and clear selection.
+            for (int i = Instances.Count - 1; i >= 0; i--)
+            {
+                if (Instances[i].BluetoothAddress == target.BluetoothAddress)
+                {
+                    Instances.RemoveAt(i);
+                }
+            }
+
+            if (ReferenceEquals(_selectedInstance, target))
+            {
+                _selectedInstance = null;
+                OnPropertyChanged(nameof(SelectedInstance));
+            }
+
             return;
         }
 
         _connection = connection;
         _connection.ConnectionLost += OnConnectionLost;
+        _connection.MostRecentRebootChanged += OnMostRecentRebootChanged;
+        _connection.MostRecentRunChanged += OnMostRecentRunChanged;
         IsConnected = true;
 
         // Now that we are connected, prefer the device's own reported name and
@@ -268,10 +271,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         StatusText = Localizer.Format("Status_Connected", target.DisplayName);
 
-        await RefreshAsync();
+        // Read the current values once, then rely on notifications for updates.
+        await ReadCurrentValuesAsync();
+
+        // Subscribe to push notifications so the timestamps update without polling.
+        if (ReferenceEquals(_connection, connection))
+        {
+            await connection.StartMostRecentRebootNotificationsAsync();
+            await connection.StartMostRecentRunNotificationsAsync();
+        }
     }
 
-    private async Task RefreshAsync()
+    private async Task ReadCurrentValuesAsync()
     {
         UpMonConnection? connection = _connection;
         if (connection is null)
@@ -280,6 +291,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         uint? millis = await connection.ReadMostRecentRebootMillisAsync();
+        uint? runMillis = await connection.ReadMostRecentRunMillisAsync();
 
         // Ignore results that arrive after we've moved on.
         if (!ReferenceEquals(_connection, connection))
@@ -288,6 +300,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         MrrText = FormatMostRecentReboot(millis);
+        MruText = FormatMostRecentRun(runMillis);
     }
 
     private async Task TriggerAsync(UpMonAction action)
@@ -307,9 +320,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         StatusText = ok
             ? Localizer.Get($"Action_{action}_Sent")
             : Localizer.Get("Action_Failed");
-
-        // The actions can change the device's reboot timestamp; reflect it promptly.
-        await RefreshAsync();
     }
 
     private void OnConnectionLost(object? sender, EventArgs e)
@@ -320,10 +330,53 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 return;
             }
 
+            UpMonInstance? droppedInstance = _selectedInstance;
+
             TearDownConnection();
             IsConnected = false;
+
+            if (droppedInstance is not null)
+            {
+                for (int i = Instances.Count - 1; i >= 0; i--)
+                {
+                    if (Instances[i].BluetoothAddress == droppedInstance.BluetoothAddress)
+                    {
+                        Instances.RemoveAt(i);
+                    }
+                }
+
+                if (ReferenceEquals(_selectedInstance, droppedInstance))
+                {
+                    _selectedInstance = null;
+                    OnPropertyChanged(nameof(SelectedInstance));
+                }
+            }
+
             MrrText = Localizer.Get("Mrr_Unknown");
+            MruText = Localizer.Get("Mru_Unknown");
             StatusText = Localizer.Get("Status_Disconnected");
+        });
+
+    private void OnMostRecentRunChanged(object? sender, uint? millis)
+        => _dispatcher.TryEnqueue(() =>
+        {
+            if (!ReferenceEquals(sender, _connection))
+            {
+                return;
+            }
+
+            MruText = FormatMostRecentRun(millis);
+        });
+
+    private void OnMostRecentRebootChanged(object? sender, uint? millis)
+        => _dispatcher.TryEnqueue(() =>
+        {
+            if (!ReferenceEquals(sender, _connection))
+            {
+                return;
+            }
+
+            MrrText = FormatMostRecentReboot(millis);
         });
 
     private void TearDownConnection()
@@ -334,6 +387,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         _connection.ConnectionLost -= OnConnectionLost;
+        _connection.MostRecentRebootChanged -= OnMostRecentRebootChanged;
+        _connection.MostRecentRunChanged -= OnMostRecentRunChanged;
         _connection.Dispose();
         _connection = null;
     }
@@ -360,6 +415,32 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         DateTimeOffset rebootedAt =
             DateTimeOffset.Now - TimeSpan.FromMilliseconds(millis.Value);
         return Localizer.Format("Mrr_At", rebootedAt.ToString("F"));
+    }
+
+    /// <summary>
+    /// Renders the milliseconds-since-last-run value as the localised wall-clock time
+    /// at which the run occurred, expressed in the current time zone.
+    /// </summary>
+    private static string FormatMostRecentRun(uint? millis)
+    {
+        // The device reports uint.MaxValue when no run has completed yet or the clock
+        // rolled over and the elapsed time can no longer be determined.
+        if (millis is null || millis.Value == uint.MaxValue)
+        {
+            return Localizer.Get("Mru_Unknown");
+        }
+
+        if (millis.Value == 0)
+        {
+            return Localizer.Get("Mrr_NotYet");
+        }
+
+        // The characteristic reports how long ago the run happened, so subtract that
+        // span from the present to recover the moment it occurred, then render it in
+        // the machine's local time zone using the current culture.
+        DateTimeOffset ranAt =
+            DateTimeOffset.Now - TimeSpan.FromMilliseconds(millis.Value);
+        return Localizer.Format("Mru_At", ranAt.ToString("F"));
     }
 
     public void Dispose()

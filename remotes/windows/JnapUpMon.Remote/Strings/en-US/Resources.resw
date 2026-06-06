@@ -72,6 +72,9 @@
   <data name="MrrLabel.Text" xml:space="preserve">
     <value>Last reboot</value>
   </data>
+  <data name="MruLabel.Text" xml:space="preserve">
+    <value>Last run</value>
+  </data>
   <data name="ActionsLabel.Text" xml:space="preserve">
     <value>Actions</value>
   </data>
@@ -83,9 +86,6 @@
   </data>
   <data name="ResetButton.Content" xml:space="preserve">
     <value>Reset</value>
-  </data>
-  <data name="RefreshButton.Content" xml:space="preserve">
-    <value>Refresh</value>
   </data>
 
   <!-- Status messages (resolved in code) -->
@@ -119,9 +119,20 @@
     <value>—</value>
   </data>
   <data name="Mrr_Never" xml:space="preserve">
-    <value>Never</value>
+    <value>(Not since last reset)</value>
   </data>
   <data name="Mrr_At" xml:space="preserve">
+    <value>{0}</value>
+  </data>
+
+  <!-- Most-recent-run rendering -->
+  <data name="Mru_Unknown" xml:space="preserve">
+    <value>—</value>
+  </data>
+  <data name="Mrr_NotYet" xml:space="preserve">
+    <value>(Not yet)</value>
+  </data>
+  <data name="Mru_At" xml:space="preserve">
     <value>{0}</value>
   </data>
 

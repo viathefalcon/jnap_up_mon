@@ -25,14 +25,19 @@ public sealed class UpMonConnection : IDisposable
     private readonly BluetoothLEDevice _device;
     private readonly GattDeviceService _service;
     private readonly GattCharacteristic _mrr;
+    private readonly GattCharacteristic _mru;
     private readonly GattCharacteristic _run;
     private readonly GattCharacteristic _reboot;
     private readonly GattCharacteristic _reset;
+
+    private bool _mrrNotificationsEnabled;
+    private bool _mruNotificationsEnabled;
 
     private UpMonConnection(
         BluetoothLEDevice device,
         GattDeviceService service,
         GattCharacteristic mrr,
+        GattCharacteristic mru,
         GattCharacteristic run,
         GattCharacteristic reboot,
         GattCharacteristic reset)
@@ -40,6 +45,7 @@ public sealed class UpMonConnection : IDisposable
         _device = device;
         _service = service;
         _mrr = mrr;
+        _mru = mru;
         _run = run;
         _reboot = reboot;
         _reset = reset;
@@ -47,6 +53,20 @@ public sealed class UpMonConnection : IDisposable
 
     /// <summary>Raised when the underlying device connection is lost.</summary>
     public event EventHandler? ConnectionLost;
+
+    /// <summary>
+    /// Raised when the device pushes a new "most recent reboot" value via notification.
+    /// The argument is the milliseconds elapsed since the most recent reboot request, or
+    /// <c>null</c> when the value could not be decoded.
+    /// </summary>
+    public event EventHandler<uint?>? MostRecentRebootChanged;
+
+    /// <summary>
+    /// Raised when the device pushes a new "most recent run" value via notification.
+    /// The argument is the milliseconds elapsed since the most recent run, or
+    /// <c>null</c> when the value could not be decoded.
+    /// </summary>
+    public event EventHandler<uint?>? MostRecentRunChanged;
 
     /// <summary>
     /// The connected device's name as reported by the OS, or <c>null</c> when it
@@ -85,18 +105,19 @@ public sealed class UpMonConnection : IDisposable
             GattDeviceService service = servicesResult.Services[0];
 
             GattCharacteristic? mrr = await GetCharacteristicAsync(service, UpMonGatt.MrrCharacteristicUuid);
+            GattCharacteristic? mru = await GetCharacteristicAsync(service, UpMonGatt.MruCharacteristicUuid);
             GattCharacteristic? run = await GetCharacteristicAsync(service, UpMonGatt.RunCharacteristicUuid);
             GattCharacteristic? reboot = await GetCharacteristicAsync(service, UpMonGatt.RebootCharacteristicUuid);
             GattCharacteristic? reset = await GetCharacteristicAsync(service, UpMonGatt.ResetCharacteristicUuid);
 
-            if (mrr is null || run is null || reboot is null || reset is null)
+            if (mrr is null || mru is null || run is null || reboot is null || reset is null)
             {
                 service.Dispose();
                 device.Dispose();
                 return null;
             }
 
-            var connection = new UpMonConnection(device, service, mrr, run, reboot, reset);
+            var connection = new UpMonConnection(device, service, mrr, mru, run, reboot, reset);
             device.ConnectionStatusChanged += connection.OnConnectionStatusChanged;
             return connection;
         }
@@ -129,25 +150,115 @@ public sealed class UpMonConnection : IDisposable
         try
         {
             GattReadResult read = await _mrr.ReadValueAsync(BluetoothCacheMode.Uncached);
-            if (read.Status != GattCommunicationStatus.Success || read.Value is null)
-            {
-                return null;
-            }
-
-            using DataReader reader = DataReader.FromBuffer(read.Value);
-            if (reader.UnconsumedBufferLength < sizeof(uint))
-            {
-                return null;
-            }
-
-            // ArduinoBLE transmits multi-byte values little-endian.
-            reader.ByteOrder = ByteOrder.LittleEndian;
-            return reader.ReadUInt32();
+            return read.Status == GattCommunicationStatus.Success
+                ? TryDecodeMillis(read.Value)
+                : null;
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Reads the "most recent run" characteristic and returns the number of
+    /// milliseconds since the last run, or <c>null</c> on failure.
+    /// </summary>
+    public async Task<uint?> ReadMostRecentRunMillisAsync()
+    {
+        try
+        {
+            GattReadResult read = await _mru.ReadValueAsync(BluetoothCacheMode.Uncached);
+            return read.Status == GattCommunicationStatus.Success
+                ? TryDecodeMillis(read.Value)
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Subscribes to notifications from the "most recent reboot" characteristic so that
+    /// <see cref="MostRecentRebootChanged"/> fires whenever the device pushes a new
+    /// value. Returns <c>true</c> when the subscription was established.
+    /// </summary>
+    public async Task<bool> StartMostRecentRebootNotificationsAsync()
+    {
+        try
+        {
+            GattCommunicationStatus status =
+                await _mrr.WriteClientCharacteristicConfigurationDescriptorAsync(
+                    GattClientCharacteristicConfigurationDescriptorValue.Notify);
+            if (status != GattCommunicationStatus.Success)
+            {
+                return false;
+            }
+
+            _mrr.ValueChanged += OnMrrValueChanged;
+            _mrrNotificationsEnabled = true;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Subscribes to notifications from the "most recent run" characteristic so that
+    /// <see cref="MostRecentRunChanged"/> fires whenever the device pushes a new
+    /// value. Returns <c>true</c> when the subscription was established.
+    /// </summary>
+    public async Task<bool> StartMostRecentRunNotificationsAsync()
+    {
+        try
+        {
+            GattCommunicationStatus status =
+                await _mru.WriteClientCharacteristicConfigurationDescriptorAsync(
+                    GattClientCharacteristicConfigurationDescriptorValue.Notify);
+            if (status != GattCommunicationStatus.Success)
+            {
+                return false;
+            }
+
+            _mru.ValueChanged += OnMruValueChanged;
+            _mruNotificationsEnabled = true;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void OnMruValueChanged(GattCharacteristic sender, GattValueChangedEventArgs args)
+        => MostRecentRunChanged?.Invoke(this, TryDecodeMillis(args.CharacteristicValue));
+
+    private void OnMrrValueChanged(GattCharacteristic sender, GattValueChangedEventArgs args)
+        => MostRecentRebootChanged?.Invoke(this, TryDecodeMillis(args.CharacteristicValue));
+
+    /// <summary>
+    /// Decodes a little-endian unsigned 32-bit value from a GATT buffer, returning
+    /// <c>null</c> when the buffer is missing or too short.
+    /// </summary>
+    private static uint? TryDecodeMillis(IBuffer? buffer)
+    {
+        if (buffer is null)
+        {
+            return null;
+        }
+
+        using DataReader reader = DataReader.FromBuffer(buffer);
+        if (reader.UnconsumedBufferLength < sizeof(uint))
+        {
+            return null;
+        }
+
+        // ArduinoBLE transmits multi-byte values little-endian.
+        reader.ByteOrder = ByteOrder.LittleEndian;
+        return reader.ReadUInt32();
     }
 
     /// <summary>
@@ -189,6 +300,18 @@ public sealed class UpMonConnection : IDisposable
 
     public void Dispose()
     {
+        if (_mrrNotificationsEnabled)
+        {
+            _mrr.ValueChanged -= OnMrrValueChanged;
+            _mrrNotificationsEnabled = false;
+        }
+
+        if (_mruNotificationsEnabled)
+        {
+            _mru.ValueChanged -= OnMruValueChanged;
+            _mruNotificationsEnabled = false;
+        }
+
         _device.ConnectionStatusChanged -= OnConnectionStatusChanged;
         _service.Dispose();
         _device.Dispose();
