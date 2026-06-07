@@ -403,16 +403,26 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void TearDownConnection()
     {
-        if (_connection is null)
+        UpMonConnection? conn = _connection;
+        if (conn is null)
         {
             return;
         }
 
-        _connection.ConnectionLost -= OnConnectionLost;
-        _connection.MostRecentRebootChanged -= OnMostRecentRebootChanged;
-        _connection.MostRecentRunChanged -= OnMostRecentRunChanged;
-        _connection.Dispose();
+        // Unsubscribe all events and null the field first so no further callbacks
+        // reach this view-model after this point.
+        conn.ConnectionLost -= OnConnectionLost;
+        conn.MostRecentRebootChanged -= OnMostRecentRebootChanged;
+        conn.MostRecentRunChanged -= OnMostRecentRunChanged;
         _connection = null;
+
+        // Dispose on a background thread.  Calling Dispose() on the UI STA thread
+        // while GATT async operations are still in-flight can deadlock: the WinRT
+        // BLE stack needs to dispatch operation completions back to the STA thread,
+        // but the STA thread is blocked inside Dispose() waiting for that cleanup.
+        // Running Dispose() off-thread lets the STA thread stay free to process
+        // those completions; in-flight operations are also cancelled via _disposeCts.
+        _ = Task.Run(() => conn.Dispose());
     }
 
     /// <summary>

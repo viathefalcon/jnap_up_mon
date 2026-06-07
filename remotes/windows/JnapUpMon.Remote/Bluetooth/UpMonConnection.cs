@@ -1,4 +1,6 @@
 using System;
+using System.Runtime.InteropServices.WindowsRuntime;
+using System.Threading;
 using System.Threading.Tasks;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
@@ -32,6 +34,7 @@ public sealed class UpMonConnection : IDisposable
 
     private bool _mrrNotificationsEnabled;
     private bool _mruNotificationsEnabled;
+    private readonly CancellationTokenSource _disposeCts = new();
 
     private UpMonConnection(
         BluetoothLEDevice device,
@@ -89,12 +92,14 @@ public sealed class UpMonConnection : IDisposable
             return null;
         }
 
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
         {
             GattDeviceServicesResult servicesResult =
                 await device.GetGattServicesForUuidAsync(
                     UpMonGatt.ServiceUuid,
-                    BluetoothCacheMode.Uncached);
+                    BluetoothCacheMode.Uncached)
+                .AsTask(cts.Token);
             if (servicesResult.Status != GattCommunicationStatus.Success ||
                 servicesResult.Services.Count == 0)
             {
@@ -104,11 +109,11 @@ public sealed class UpMonConnection : IDisposable
 
             GattDeviceService service = servicesResult.Services[0];
 
-            GattCharacteristic? mrr = await GetCharacteristicAsync(service, UpMonGatt.MrrCharacteristicUuid);
-            GattCharacteristic? mru = await GetCharacteristicAsync(service, UpMonGatt.MruCharacteristicUuid);
-            GattCharacteristic? run = await GetCharacteristicAsync(service, UpMonGatt.RunCharacteristicUuid);
-            GattCharacteristic? reboot = await GetCharacteristicAsync(service, UpMonGatt.RebootCharacteristicUuid);
-            GattCharacteristic? reset = await GetCharacteristicAsync(service, UpMonGatt.ResetCharacteristicUuid);
+            GattCharacteristic? mrr = await GetCharacteristicAsync(service, UpMonGatt.MrrCharacteristicUuid, cts.Token);
+            GattCharacteristic? mru = await GetCharacteristicAsync(service, UpMonGatt.MruCharacteristicUuid, cts.Token);
+            GattCharacteristic? run = await GetCharacteristicAsync(service, UpMonGatt.RunCharacteristicUuid, cts.Token);
+            GattCharacteristic? reboot = await GetCharacteristicAsync(service, UpMonGatt.RebootCharacteristicUuid, cts.Token);
+            GattCharacteristic? reset = await GetCharacteristicAsync(service, UpMonGatt.ResetCharacteristicUuid, cts.Token);
 
             if (mrr is null || mru is null || run is null || reboot is null || reset is null)
             {
@@ -130,12 +135,14 @@ public sealed class UpMonConnection : IDisposable
 
     private static async Task<GattCharacteristic?> GetCharacteristicAsync(
         GattDeviceService service,
-        Guid characteristicUuid)
+        Guid characteristicUuid,
+        CancellationToken cancellationToken = default)
     {
         GattCharacteristicsResult result =
             await service.GetCharacteristicsForUuidAsync(
                 characteristicUuid,
-                BluetoothCacheMode.Uncached);
+                BluetoothCacheMode.Uncached)
+            .AsTask(cancellationToken);
         return result.Status == GattCommunicationStatus.Success && result.Characteristics.Count > 0
             ? result.Characteristics[0]
             : null;
@@ -149,7 +156,8 @@ public sealed class UpMonConnection : IDisposable
     {
         try
         {
-            GattReadResult read = await _mrr.ReadValueAsync(BluetoothCacheMode.Uncached);
+            GattReadResult read = await _mrr.ReadValueAsync(BluetoothCacheMode.Uncached)
+                .AsTask(_disposeCts.Token);
             return read.Status == GattCommunicationStatus.Success
                 ? TryDecodeMillis(read.Value)
                 : null;
@@ -168,7 +176,8 @@ public sealed class UpMonConnection : IDisposable
     {
         try
         {
-            GattReadResult read = await _mru.ReadValueAsync(BluetoothCacheMode.Uncached);
+            GattReadResult read = await _mru.ReadValueAsync(BluetoothCacheMode.Uncached)
+                .AsTask(_disposeCts.Token);
             return read.Status == GattCommunicationStatus.Success
                 ? TryDecodeMillis(read.Value)
                 : null;
@@ -190,7 +199,8 @@ public sealed class UpMonConnection : IDisposable
         {
             GattCommunicationStatus status =
                 await _mrr.WriteClientCharacteristicConfigurationDescriptorAsync(
-                    GattClientCharacteristicConfigurationDescriptorValue.Notify);
+                    GattClientCharacteristicConfigurationDescriptorValue.Notify)
+                .AsTask(_disposeCts.Token);
             if (status != GattCommunicationStatus.Success)
             {
                 return false;
@@ -217,7 +227,8 @@ public sealed class UpMonConnection : IDisposable
         {
             GattCommunicationStatus status =
                 await _mru.WriteClientCharacteristicConfigurationDescriptorAsync(
-                    GattClientCharacteristicConfigurationDescriptorValue.Notify);
+                    GattClientCharacteristicConfigurationDescriptorValue.Notify)
+                .AsTask(_disposeCts.Token);
             if (status != GattCommunicationStatus.Success)
             {
                 return false;
@@ -281,7 +292,8 @@ public sealed class UpMonConnection : IDisposable
 
             GattCommunicationStatus status = await characteristic.WriteValueAsync(
                 writer.DetachBuffer(),
-                GattWriteOption.WriteWithResponse);
+                GattWriteOption.WriteWithResponse)
+                .AsTask(_disposeCts.Token);
             return status == GattCommunicationStatus.Success;
         }
         catch
@@ -300,6 +312,9 @@ public sealed class UpMonConnection : IDisposable
 
     public void Dispose()
     {
+        // Cancel any in-flight GATT operations before tearing down the underlying objects.
+        _disposeCts.Cancel();
+
         if (_mrrNotificationsEnabled)
         {
             _mrr.ValueChanged -= OnMrrValueChanged;
@@ -315,5 +330,6 @@ public sealed class UpMonConnection : IDisposable
         _device.ConnectionStatusChanged -= OnConnectionStatusChanged;
         _service.Dispose();
         _device.Dispose();
+        _disposeCts.Dispose();
     }
 }
