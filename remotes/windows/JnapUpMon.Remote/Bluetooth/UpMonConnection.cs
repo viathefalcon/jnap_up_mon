@@ -24,6 +24,10 @@ public enum UpMonAction
 /// </summary>
 public sealed class UpMonConnection : IDisposable
 {
+    // Upper bound on how long a single GATT discovery call may take.  The
+    // value is generous enough to survive a momentarily busy radio while
+    // still bounding the time ConnectAsync can block in a degraded state.
+    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(15);
     private readonly BluetoothLEDevice _device;
     private readonly GattDeviceService _service;
     private readonly GattCharacteristic _mrr;
@@ -92,7 +96,7 @@ public sealed class UpMonConnection : IDisposable
             return null;
         }
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var cts = new CancellationTokenSource(ConnectTimeout);
         try
         {
             GattDeviceServicesResult servicesResult =

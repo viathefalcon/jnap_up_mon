@@ -422,7 +422,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // but the STA thread is blocked inside Dispose() waiting for that cleanup.
         // Running Dispose() off-thread lets the STA thread stay free to process
         // those completions; in-flight operations are also cancelled via _disposeCts.
-        _ = Task.Run(() => conn.Dispose());
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                conn.Dispose();
+            }
+            catch
+            {
+                // Disposal failures are non-fatal; swallow to avoid crashing
+                // the background thread.
+            }
+        });
     }
 
     /// <summary>
