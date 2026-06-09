@@ -1,7 +1,9 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Net.ViaTheFalcon.JnapUpMon.Remote.ViewModels;
 using Windows.Foundation;
 using Windows.Graphics;
@@ -26,6 +28,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         ViewModel = new MainViewModel();
+        ViewModel.ConfirmRebootAsync = ShowRebootConfirmationAsync;
         InitializeComponent();
 
         Title = Localizer.Get("AppTitle/Text");
@@ -135,4 +138,49 @@ public sealed partial class MainWindow : Window
 
     private void OnClosed(object sender, WindowEventArgs args)
         => ViewModel.Dispose();
+
+    /// <summary>
+    /// Shows a WinUI 3 <see cref="ContentDialog"/> that requires the user to tick a
+    /// confirmation checkbox before the primary button becomes enabled.
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> if the user ticked the checkbox and clicked the primary button;
+    /// <c>false</c> if the user dismissed or cancelled the dialog.
+    /// </returns>
+    private async Task<bool> ShowRebootConfirmationAsync()
+    {
+        var checkBox = new CheckBox
+        {
+            Content = Localizer.Get("RebootConfirm_Check"),
+        };
+
+        var dialog = new ContentDialog
+        {
+            Title = Localizer.Get("RebootConfirm_Title"),
+            Content = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = Localizer.Get("RebootConfirm_Message"),
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    checkBox,
+                },
+            },
+            PrimaryButtonText = Localizer.Get("RebootConfirm_Proceed"),
+            CloseButtonText = Localizer.Get("RebootConfirm_Cancel"),
+            DefaultButton = ContentDialogButton.Close,
+            IsPrimaryButtonEnabled = false,
+            XamlRoot = RootGrid.XamlRoot,
+        };
+
+        checkBox.Checked += (_, _) => dialog.IsPrimaryButtonEnabled = true;
+        checkBox.Unchecked += (_, _) => dialog.IsPrimaryButtonEnabled = false;
+
+        ContentDialogResult result = await dialog.ShowAsync();
+        return result == ContentDialogResult.Primary;
+    }
 }
