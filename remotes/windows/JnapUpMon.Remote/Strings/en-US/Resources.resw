@@ -176,10 +176,10 @@
     <value>Confirm Reboot</value>
   </data>
   <data name="RebootConfirm_Message" xml:space="preserve">
-    <value>This will immediately reboot the router. Any active connections will be dropped.</value>
+    <value>This will ask the router to immediately reboot itself. Any active connections will be dropped.</value>
   </data>
   <data name="RebootConfirm_Check" xml:space="preserve">
-    <value>I understand the router will be rebooted</value>
+    <value>I understand, and wish to proceed</value>
   </data>
   <data name="RebootConfirm_Proceed" xml:space="preserve">
     <value>Reboot</value>
