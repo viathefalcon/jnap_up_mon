@@ -66,6 +66,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public AsyncRelayCommand ResetCommand { get; }
 
+    /// <summary>
+    /// Optional callback invoked before the Reboot action is sent. Return <c>true</c>
+    /// to proceed, <c>false</c> to cancel. When <c>null</c>, the reboot proceeds
+    /// without confirmation.
+    /// </summary>
+    public Func<Task<bool>>? ConfirmRebootAsync { get; set; }
+
     /// <summary>The instance currently chosen in the drop down.</summary>
     public UpMonInstance? SelectedInstance
     {
@@ -327,6 +334,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task TriggerAsync(UpMonAction action)
     {
+        if (action == UpMonAction.Reboot && ConfirmRebootAsync is { } confirm)
+        {
+            bool confirmed = await confirm();
+            if (!confirmed)
+            {
+                return;
+            }
+        }
+
         UpMonConnection? connection = _connection;
         if (connection is null)
         {

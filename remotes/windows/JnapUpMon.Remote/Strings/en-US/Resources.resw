@@ -170,4 +170,21 @@
   <data name="Action_Failed" xml:space="preserve">
     <value>The action could not be sent.</value>
   </data>
+
+  <!-- Reboot confirmation dialog -->
+  <data name="RebootConfirm_Title" xml:space="preserve">
+    <value>Confirm Reboot</value>
+  </data>
+  <data name="RebootConfirm_Message" xml:space="preserve">
+    <value>This will ask the router to immediately reboot itself. Any active connections will be dropped.</value>
+  </data>
+  <data name="RebootConfirm_Check" xml:space="preserve">
+    <value>I understand, and wish to proceed</value>
+  </data>
+  <data name="RebootConfirm_Proceed" xml:space="preserve">
+    <value>Reboot</value>
+  </data>
+  <data name="RebootConfirm_Cancel" xml:space="preserve">
+    <value>Cancel</value>
+  </data>
 </root>
