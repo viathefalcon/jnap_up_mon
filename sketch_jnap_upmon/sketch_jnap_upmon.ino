@@ -466,7 +466,7 @@ void loop() {
 
   // When did we get here - was it because of a timeout
   // or maybe we were told to just go
-  const unsigned long interval = (5 * ONE_MINUTE_MILLIS);
+  const unsigned long interval = (15 * ONE_MINUTE_MILLIS);
   const unsigned long now = millis( );
   const unsigned long elapsed = (skipWait)
     ? (interval + 1)
