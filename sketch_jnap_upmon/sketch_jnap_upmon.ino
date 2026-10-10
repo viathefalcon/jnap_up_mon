@@ -172,6 +172,15 @@ int ReadFromCanaries() {
   return count;
 }
 
+// Services the BLE stack for the given duration in place of a plain delay().
+// BLE.poll() can return early when BLE traffic arrives, so keep polling until the full duration has passed.
+void Poll(unsigned long durationMillis) {
+  const unsigned long until = millis() + durationMillis;
+  do {
+    BLE.poll(until - millis());
+  } while (millis() < until);
+}
+
 int ConnectToWiFi() {
   const unsigned long interval = 500;
   const unsigned long timeout  = 15000;
@@ -181,7 +190,7 @@ int ConnectToWiFi() {
     if (attempt > 0) {
       // Tear down the previous failed attempt cleanly before re-issuing begin()
       WiFi.disconnect();
-      delay(2000);
+      Poll(2000);
     }
 
     Serial.print("Attempting to connect to ");
@@ -194,7 +203,7 @@ int ConnectToWiFi() {
     // Poll until associated or the per-attempt deadline expires
     const unsigned long deadline = millis() + timeout;
     do {
-      delay(interval);
+      Poll(interval);
       status = WiFi.status();
       Serial.print("  status: ");
       Serial.println(status, HEX);
@@ -202,33 +211,6 @@ int ConnectToWiFi() {
   }
 
   return status;
-}
-
-void RestartBLE() {
-  do {
-    delay(200);
-  } while (!BLE.begin());
-
-  BLE.setLocalName("Arduino");
-  BLE.setAdvertisedService(bleService);
-
-  bleService.addCharacteristic(runCharacteristic);
-  bleService.addCharacteristic(rebootCharacteristic);
-  bleService.addCharacteristic(resetCharacteristic);
-  bleService.addCharacteristic(mrrCharacteristic);
-  bleService.addCharacteristic(mruCharacteristic);
-
-  BLE.addService(bleService);
-  BLE.advertise();
-}
-
-void StopBLE() {
-  // Tear down the BLE stack before handing the radio to WiFi.
-  // stopAdvertise() prevents new connections; disconnect() cleanly closes any
-  // active central connection (no-op if none); end() shuts the HCI layer down.
-  BLE.stopAdvertise();
-  BLE.disconnect();
-  BLE.end();
 }
 
 // Computes the milliseconds elapsed since the most recent reboot request and pushes it into
@@ -242,7 +224,7 @@ void UpdateMrrCharacteristic() {
   }
 
   const unsigned long now = millis( );
-  if (mrr >= now) {
+  if (mrr > now) {
     // Clock has (probably) rolled over so we can't really know.
     mrrCharacteristic.writeValue( ULONG_MAX );
     return;
@@ -262,7 +244,7 @@ void UpdateMruCharacteristic() {
   }
 
   const unsigned long now = millis( );
-  if (mru >= now) {
+  if (mru > now) {
     // Clock has (probably) rolled over so we can't really know.
     mruCharacteristic.writeValue( ULONG_MAX );
     return;
@@ -272,8 +254,6 @@ void UpdateMruCharacteristic() {
 }
 
 void DoJnapUpMon(bool skipCanary) {
-  StopBLE();
-
   const int status = ConnectToWiFi();
   if (status == WL_CONNECTED){
     // Try and make an outbound HTTP call
@@ -292,16 +272,15 @@ void DoJnapUpMon(bool skipCanary) {
       digitalWrite( LED_BUILTIN, LOW );
     }
 
-    // Disassociate cleanly, then power down the radio
+    // Disassociate cleanly
     WiFi.disconnect();
     WiFi.end();
   }
 
-  // Capture the timestamp and bring the BLE stack back up before returning
+  // Capture the timestamp; BLE stays up throughout, so there's nothing to restart
   mru = millis( );
   UpdateMruCharacteristic( );
   UpdateMrrCharacteristic( );
-  RestartBLE( );
 }
 
 void SetupWiFi() {
@@ -427,8 +406,26 @@ void SetupBLE() {
   UpdateMrrCharacteristic( );
   UpdateMruCharacteristic( );
 
-  // Start the connection
-  RestartBLE();
+  // Start the BLE stack once; it remains up alongside WiFi for the lifetime of the sketch
+  do {
+    delay(200);
+  } while (!BLE.begin());
+
+  BLE.setLocalName("Arduino");
+  BLE.setAdvertisedService(bleService);
+
+  bleService.addCharacteristic(runCharacteristic);
+  bleService.addCharacteristic(rebootCharacteristic);
+  bleService.addCharacteristic(resetCharacteristic);
+  bleService.addCharacteristic(mrrCharacteristic);
+  bleService.addCharacteristic(mruCharacteristic);
+
+  BLE.addService(bleService);
+
+  // Resume advertising once a central disconnects
+  BLE.setEventHandler(BLEDisconnected, onBLEDisconnected);
+
+  BLE.advertise();
 }
 
 void setup() {
@@ -466,7 +463,7 @@ void loop() {
 
   // When did we get here - was it because of a timeout
   // or maybe we were told to just go
-  const unsigned long interval = (15 * ONE_MINUTE_MILLIS);
+  const unsigned long interval = (2 * ONE_MINUTE_MILLIS);
   const unsigned long now = millis( );
   const unsigned long elapsed = (skipWait)
     ? (interval + 1)

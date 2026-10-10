@@ -128,6 +128,9 @@
   <data name="Status_Connected" xml:space="preserve">
     <value>Connected to {0}.</value>
   </data>
+  <data name="Status_Updated" xml:space="preserve">
+    <value>Last updated: {0}.</value>
+  </data>
   <data name="Status_Failed" xml:space="preserve">
     <value>Failed to connect to {0}.</value>
   </data>
@@ -149,9 +152,6 @@
   <!-- Most-recent-run rendering -->
   <data name="Mru_Unknown" xml:space="preserve">
     <value>—</value>
-  </data>
-  <data name="Mrr_NotYet" xml:space="preserve">
-    <value>(Not yet)</value>
   </data>
   <data name="Mru_At" xml:space="preserve">
     <value>{0}</value>

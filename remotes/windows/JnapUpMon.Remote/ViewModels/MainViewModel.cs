@@ -330,7 +330,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         MrrText = FormatMostRecentReboot(millis);
         MruText = FormatMostRecentRun(runMillis);
+
+        if (millis is not null || runMillis is not null)
+        {
+            MarkDataReceived();
+        }
     }
+
+    // Shows the local time at which the most recent data arrived from the sketch.
+    private void MarkDataReceived()
+        => StatusText = Localizer.Format("Status_Updated", DateTimeOffset.Now.ToString("g"));
 
     private async Task TriggerAsync(UpMonAction action)
     {
@@ -404,6 +413,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
 
             MruText = FormatMostRecentRun(millis);
+
+            if (millis is not null)
+            {
+                MarkDataReceived();
+            }
         });
 
     private void OnMostRecentRebootChanged(object? sender, uint? millis)
@@ -415,6 +429,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
 
             MrrText = FormatMostRecentReboot(millis);
+
+            if (millis is not null)
+            {
+                MarkDataReceived();
+            }
         });
 
     private void TearDownConnection()
@@ -483,15 +502,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private static string FormatMostRecentRun(uint? millis)
     {
         // The device reports uint.MaxValue when no run has completed yet or the clock
-        // rolled over and the elapsed time can no longer be determined.
+        // rolled over and the elapsed time can no longer be determined. Zero is a valid
+        // reading (the run completed within the same millisecond it was reported).
         if (millis is null || millis.Value == uint.MaxValue)
         {
             return Localizer.Get("Mru_Unknown");
-        }
-
-        if (millis.Value == 0)
-        {
-            return Localizer.Get("Mrr_NotYet");
         }
 
         // The characteristic reports how long ago the run happened, so subtract that
